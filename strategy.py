@@ -55,6 +55,7 @@ def get_hist_data_baostock(code: str, use_cache: bool = True) -> pd.DataFrame:
     1. 如果没有缓存，首次获取最近150个自然日数据
     2. 如果已有缓存，只从缓存最后日期之后开始更新
     3. 合并新旧数据，按日期去重
+    4. 打印当前使用的最新K线日期
     """
 
     os.makedirs(HIST_CACHE_DIR, exist_ok=True)
@@ -76,15 +77,19 @@ def get_hist_data_baostock(code: str, use_cache: bool = True) -> pd.DataFrame:
 
             # 如果缓存已经更新到今天，直接使用
             if last_date.strftime("%Y-%m-%d") >= end_date:
+                print(f"{code} 使用本地缓存，最新K线日期：{last_date.strftime('%Y-%m-%d')}")
                 return old_df
 
             # 从最后日期的下一天开始补数据
             start_date = (last_date + timedelta(days=1)).strftime("%Y-%m-%d")
+            print(f"{code} 本地缓存最新K线日期：{last_date.strftime('%Y-%m-%d')}，开始增量更新...")
         else:
             start_date = (datetime.now() - timedelta(days=150)).strftime("%Y-%m-%d")
+            print(f"{code} 缓存文件异常，重新获取最近150天K线...")
     else:
         # 没有缓存，首次拉最近150个自然日
         start_date = (datetime.now() - timedelta(days=150)).strftime("%Y-%m-%d")
+        print(f"{code} 无本地缓存，首次获取最近150天K线...")
 
     try:
         rs = bs.query_history_k_data_plus(
@@ -101,6 +106,8 @@ def get_hist_data_baostock(code: str, use_cache: bool = True) -> pd.DataFrame:
 
             # 如果新数据获取失败，但有旧缓存，就先用旧缓存
             if not old_df.empty:
+                last_date = old_df["日期"].max()
+                print(f"{code} 使用旧缓存，最新K线日期：{last_date.strftime('%Y-%m-%d')}")
                 return old_df
 
             return pd.DataFrame()
@@ -154,30 +161,39 @@ def get_hist_data_baostock(code: str, use_cache: bool = True) -> pd.DataFrame:
             # 按日期排序
             df = df.sort_values("日期")
 
-            # 只保留最近150个自然日附近的数据，避免文件无限变大
+            # 只保留最近180个自然日附近的数据，避免文件无限变大
             cutoff_date = datetime.now() - timedelta(days=180)
             df = df[df["日期"] >= cutoff_date]
 
+            latest_date = df["日期"].max().strftime("%Y-%m-%d")
+            print(f"{code} K线已更新到：{latest_date}")
+
+            # 保存时日期转成字符串
             df["日期"] = df["日期"].dt.strftime("%Y-%m-%d")
-
             df.to_csv(cache_file, index=False, encoding="utf-8-sig")
-
-            print(f"{code} K线已更新到：{df['日期'].iloc[-1]}")
 
             return df
 
         else:
             # 没有新数据，说明可能今天还没更新，直接用旧缓存
             if not old_df.empty:
+                last_date = old_df["日期"].max()
+                print(f"{code} BaoStock暂无新数据，使用缓存，最新K线日期：{last_date.strftime('%Y-%m-%d')}")
+
                 old_df["日期"] = old_df["日期"].dt.strftime("%Y-%m-%d")
                 return old_df
 
+            print(f"{code} BaoStock没有返回K线数据。")
             return pd.DataFrame()
 
     except Exception as e:
         print(f"{code} BaoStock K线获取失败：{e}")
 
         if not old_df.empty:
+            last_date = old_df["日期"].max()
+            print(f"{code} 使用旧缓存，最新K线日期：{last_date.strftime('%Y-%m-%d')}")
+
+            old_df["日期"] = old_df["日期"].dt.strftime("%Y-%m-%d")
             return old_df
 
         return pd.DataFrame()
