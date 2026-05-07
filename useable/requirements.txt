@@ -1,0 +1,6 @@
+akshare
+pandas
+openpyxl
+tabulate
+baostock
+wcwidth
