@@ -1,3 +1,4 @@
+tushare
 akshare
 pandas
 openpyxl

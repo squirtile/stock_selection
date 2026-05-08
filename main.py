@@ -1,6 +1,8 @@
 # main.py
 
+import argparse
 import os
+import time
 from datetime import datetime
 
 import pandas as pd
@@ -497,7 +499,7 @@ def split_export_sections(export_signal_df: pd.DataFrame):
 # 主程序
 # =========================
 
-def main():
+def run_daily():
     disable_proxy()
 
     selected_df = load_or_create_base_pool()
@@ -601,6 +603,143 @@ def main():
         print("今日没有主升类信号。")
     else:
         print_stock_table(main_promotion_df, max_rows=50)
+
+
+# =========================
+# 统一入口：盘后 / 实时
+# =========================
+
+def run_realtime(args):
+    """
+    盘中实时扫描模式。
+    读取 output/a_stock_selected.xlsx 基础池，读取 cache/hist 的 BaoStock 历史K线缓存，
+    再用 Tushare 老接口 get_realtime_quotes 获取盘中实时行情。
+    """
+
+    from realtime_strategy import scan_realtime_once
+
+    if args.loop:
+        while True:
+            loop_start_time = time.time()
+
+            print("\n" + "=" * 100)
+            print(f"开始新一轮实时扫描：{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+            print("=" * 100)
+
+            try:
+                scan_realtime_once(
+                    batch_size=args.batch_size,
+                    quote_sleep=args.quote_sleep,
+                    max_stocks=args.max_stocks,
+                    max_workers=args.max_workers,
+                    enable_minute=not args.disable_minute,
+                    minute_max_stocks=args.minute_max_stocks,
+                )
+            except KeyboardInterrupt:
+                print("用户中断，实时扫描结束。")
+                break
+            except Exception as e:
+                print(f"本轮实时扫描异常：{e}")
+
+            elapsed = time.time() - loop_start_time
+            sleep_seconds = max(0, args.interval - elapsed)
+
+            print(
+                f"本轮耗时：{elapsed:.2f} 秒，"
+                f"目标间隔：{args.interval} 秒，"
+                f"等待：{sleep_seconds:.2f} 秒后开始下一轮..."
+            )
+
+            try:
+                time.sleep(sleep_seconds)
+            except KeyboardInterrupt:
+                print("用户中断，实时扫描结束。")
+                break
+    else:
+        scan_realtime_once(
+            batch_size=args.batch_size,
+            quote_sleep=args.quote_sleep,
+            max_stocks=args.max_stocks,
+            max_workers=args.max_workers,
+            enable_minute=not args.disable_minute,
+            minute_max_stocks=args.minute_max_stocks,
+        )
+
+
+def parse_args():
+    parser = argparse.ArgumentParser(description="A股股票筛选工具：盘后选股 / 盘中实时扫描")
+
+    parser.add_argument(
+        "--mode",
+        choices=["daily", "realtime"],
+        default="daily",
+        help="运行模式：daily=盘后日线选股；realtime=盘中实时扫描。默认 daily。",
+    )
+
+    parser.add_argument(
+        "--loop",
+        action="store_true",
+        help="realtime 模式下循环执行实时扫描。",
+    )
+
+    parser.add_argument(
+        "--interval",
+        type=int,
+        default=60,
+        help="realtime 循环模式下每轮扫描间隔秒数，默认60秒。",
+    )
+
+    parser.add_argument(
+        "--batch-size",
+        type=int,
+        default=50,
+        help="realtime 模式下实时行情每批请求股票数量，默认50。",
+    )
+
+    parser.add_argument(
+        "--quote-sleep",
+        type=float,
+        default=0.5,
+        help="realtime 模式下每批实时行情请求之间的间隔秒数，默认0.5秒。",
+    )
+
+    parser.add_argument(
+        "--max-workers",
+        type=int,
+        default=4,
+        help="realtime 模式下并发获取实时行情的线程数，默认4。",
+    )
+
+    parser.add_argument(
+        "--max-stocks",
+        type=int,
+        default=0,
+        help="测试用：realtime 模式下只扫描前N只股票。默认0表示扫描全部。",
+    )
+
+    parser.add_argument(
+        "--disable-minute",
+        action="store_true",
+        help="realtime 模式下关闭 5分钟/30分钟 B点确认。默认开启。",
+    )
+
+    parser.add_argument(
+        "--minute-max-stocks",
+        type=int,
+        default=0,
+        help="测试用：分钟级确认只处理前N只日线命中股票。默认0表示全部。",
+    )
+
+    return parser.parse_args()
+
+
+def main():
+    args = parse_args()
+
+    if args.mode == "realtime":
+        run_realtime(args)
+    else:
+        run_daily()
 
 
 if __name__ == "__main__":

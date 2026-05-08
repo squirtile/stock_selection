@@ -1,19 +1,19 @@
 # data_loader.py
 
-# data_loader.py
-
 import os
-import requests
-import akshare as ak
-import pandas as pd
 import time
+from datetime import datetime, timedelta
+
+import pandas as pd
+import requests
+import tushare as ts
+
+from config import TUSHARE_TOKEN, TUSHARE_HTTP_URL
 
 
 def disable_proxy():
     """
-    强制禁用代理。
-    注意：该函数可能会被 main.py、strategy.py、concept_analyzer.py 多次调用，
-    所以必须避免重复 monkey patch requests.Session。
+    强制禁用系统代理，避免本地代理影响 Tushare/东方财富接口访问。
     """
 
     proxy_keys = [
@@ -47,150 +47,203 @@ def disable_proxy():
 
     requests.Session = NoProxySession
 
-def safe_load_a_stock_spot(max_retry: int = 5, sleep_seconds: int = 5) -> pd.DataFrame:
+
+def get_tushare_pro():
     """
-    安全获取 A 股实时行情。
-    东方财富接口偶尔会断开连接，所以这里加重试。
-    """
-
-    last_error = None
-
-    for i in range(max_retry):
-        try:
-            disable_proxy()
-
-            print(f"正在获取 A 股行情，第 {i + 1}/{max_retry} 次尝试...")
-
-            df = ak.stock_zh_a_spot_em()
-
-            if df is not None and not df.empty:
-                print("A 股行情获取成功。")
-                return df
-
-        except Exception as e:
-            last_error = e
-            print(f"A 股行情获取失败，第 {i + 1}/{max_retry} 次。错误：{e}")
-            time.sleep(sleep_seconds)
-
-    print("A 股行情多次获取失败。")
-    print(f"最后一次错误：{last_error}")
-
-    raise last_error
-
-def load_industry_map(use_cache: bool = True) -> pd.DataFrame:
-    """
-    获取东方财富行业板块成分股，并生成：
-    代码 - 行业
-
-    增加缓存，避免每次重新请求东方财富行业接口。
+    初始化 Tushare Pro。
+    支持官方 Token + 第三方代理地址。
     """
 
-    os.makedirs("cache", exist_ok=True)
+    token = os.getenv("TUSHARE_TOKEN", TUSHARE_TOKEN)
+    http_url = os.getenv("TUSHARE_HTTP_URL", TUSHARE_HTTP_URL)
 
-    cache_file = "cache/industry_map.csv"
-
-    if use_cache and os.path.exists(cache_file):
-        print(f"发现行业缓存：{cache_file}")
-        result = pd.read_csv(cache_file, dtype={"代码": str})
-        result["代码"] = result["代码"].astype(str).str.zfill(6)
-        return result[["代码", "行业"]]
-
-    print("正在获取行业数据...")
-
-    max_retry = 5
-    last_error = None
-
-    industry_df = None
-
-    for i in range(max_retry):
-        try:
-            disable_proxy()
-            print(f"正在获取行业列表，第 {i + 1}/{max_retry} 次尝试...")
-            industry_df = ak.stock_board_industry_name_em()
-
-            if industry_df is not None and not industry_df.empty:
-                break
-
-        except Exception as e:
-            last_error = e
-            print(f"行业列表获取失败，第 {i + 1}/{max_retry} 次：{e}")
-            time.sleep(5)
-
-    if industry_df is None or industry_df.empty:
-        raise ValueError(f"行业列表获取失败，最后错误：{last_error}")
-
-    all_list = []
-
-    for idx, industry_name in enumerate(industry_df["板块名称"].tolist()):
-        try:
-            print(f"正在获取行业 {idx + 1}/{len(industry_df)}：{industry_name}")
-
-            disable_proxy()
-
-            cons_df = ak.stock_board_industry_cons_em(symbol=industry_name)
-
-            if cons_df is None or cons_df.empty:
-                continue
-
-            temp_df = cons_df[["代码", "名称"]].copy()
-            temp_df["代码"] = temp_df["代码"].astype(str).str.zfill(6)
-            temp_df["行业"] = industry_name
-
-            all_list.append(temp_df)
-
-            # 限速，别太快
-            time.sleep(0.8)
-
-        except Exception as e:
-            print(f"行业 {industry_name} 获取失败，已跳过。错误：{e}")
-            time.sleep(2)
-            continue
-
-    if not all_list:
-        raise ValueError("行业数据获取失败，没有拿到任何行业成分股。")
-
-    result = pd.concat(all_list, ignore_index=True)
-
-    result = result.drop_duplicates(subset=["代码"], keep="first")
-
-    result.to_csv(cache_file, index=False, encoding="utf-8-sig")
-
-    print(f"行业映射数量：{len(result)}")
-    print(f"行业缓存已保存：{cache_file}")
-
-    return result[["代码", "行业"]]
-
-def load_a_stock_spot() -> pd.DataFrame:
-    """
-    获取 A 股实时行情数据，并合并行业字段。
-    """
+    if not token or token == "这里填你的token":
+        raise ValueError(
+            "没有配置 Tushare Token。请在 config.py 里填写 TUSHARE_TOKEN，"
+            "或者在 PowerShell 中设置环境变量：$env:TUSHARE_TOKEN='你的token'"
+        )
 
     disable_proxy()
 
-    try:
-        # df = ak.stock_zh_a_spot_em()
-        df = safe_load_a_stock_spot(max_retry=5, sleep_seconds=8)
-    except Exception as e:
-        print("获取 A 股数据失败。")
-        print("可能原因：代理异常、网络异常、东方财富接口临时不可用。")
-        print("原始错误：")
-        print(e)
-        raise
+    pro = ts.pro_api(token)
 
-    print("当前行情数据字段：")
-    print(df.columns.tolist())
+    if http_url:
+        pro._DataApi__http_url = http_url
 
-    # 统一代码格式
-    df["代码"] = df["代码"].astype(str).str.zfill(6)
+    return pro
 
-    # 获取行业映射
-    industry_map = load_industry_map()
-    industry_map["代码"] = industry_map["代码"].astype(str).str.zfill(6)
 
-    # 合并行业
-    df = df.merge(industry_map, on="代码", how="left")
+def call_with_retry(func, *args, max_retry: int = 5, sleep_seconds: int = 3, **kwargs) -> pd.DataFrame:
+    """
+    Tushare 接口安全调用，失败自动重试。
 
-    print("合并行业后的字段：")
-    print(df.columns.tolist())
+    支持把 exchange/list_status/fields 等参数继续传给 Tushare 接口。
+    也兼容 functools.partial，因为 partial 对象没有 __name__ 属性。
+    """
 
+    func_name = getattr(func, "__name__", None)
+
+    if func_name is None and hasattr(func, "func"):
+        func_name = getattr(func.func, "__name__", "tushare_api")
+
+    if func_name is None:
+        func_name = "tushare_api"
+
+    last_error = None
+
+    for i in range(max_retry):
+        try:
+            print(f"正在请求 {func_name}，第 {i + 1}/{max_retry} 次尝试...")
+            df = func(*args, **kwargs)
+
+            if df is not None and not df.empty:
+                print(f"{func_name} 请求成功，数据量：{len(df)}")
+                return df
+
+            print(f"{func_name} 返回为空。")
+
+        except Exception as e:
+            last_error = e
+            print(f"{func_name} 请求失败，第 {i + 1}/{max_retry} 次：{e}")
+
+        time.sleep(sleep_seconds)
+
+    if last_error:
+        raise last_error
+
+    return pd.DataFrame()
+
+
+def find_latest_daily_basic(pro, max_back_days: int = 15) -> pd.DataFrame:
+    """
+    获取最近一个有 daily_basic 数据的交易日。
+    注意：当天未收盘、周末、节假日时，当日可能为空，所以向前回溯。
+    """
+
+    fields = (
+        "ts_code,trade_date,close,turnover_rate,volume_ratio,"
+        "pe,pb,total_mv,circ_mv"
+    )
+
+    today = datetime.now()
+
+    for i in range(max_back_days):
+        trade_date = (today - timedelta(days=i)).strftime("%Y%m%d")
+        print(f"正在尝试获取 daily_basic：{trade_date}")
+
+        df = pro.daily_basic(trade_date=trade_date, fields=fields)
+
+        if df is not None and not df.empty:
+            print(f"daily_basic 获取成功，交易日：{trade_date}，数量：{len(df)}")
+            return df
+
+        time.sleep(0.3)
+
+    raise ValueError("最近多日都没有获取到 daily_basic 数据，请检查 Token、代理地址或交易日。")
+
+
+def find_latest_daily_quote(pro, trade_date: str) -> pd.DataFrame:
+    """
+    获取指定交易日的日行情，用于补充涨跌幅、成交额等字段。
+    Tushare daily 中 amount 单位通常为千元，这里后续会转换为元。
+    """
+
+    fields = "ts_code,trade_date,open,high,low,close,vol,amount,pct_chg"
+
+    df = pro.daily(trade_date=trade_date, fields=fields)
+
+    if df is None or df.empty:
+        print(f"警告：{trade_date} daily 行情为空，将只使用 daily_basic 字段。")
+        return pd.DataFrame()
+
+    print(f"daily 行情获取成功，交易日：{trade_date}，数量：{len(df)}")
     return df
+
+
+def load_stock_basic(pro) -> pd.DataFrame:
+    """
+    获取上市 A 股基础信息。
+    """
+
+    fields = "ts_code,symbol,name,area,industry,market,list_date"
+
+    df = call_with_retry(
+        pro.stock_basic,
+        exchange="",
+        list_status="L",
+        fields=fields,
+    )
+
+    print(f"stock_basic 获取成功，数量：{len(df)}")
+    return df
+
+
+def load_a_stock_spot() -> pd.DataFrame:
+    """
+    使用 Tushare 获取 A 股基础股票池所需字段。
+
+    输出字段尽量兼容原来的 AKShare 版本：
+    代码、名称、最新价、涨跌幅、成交额、总市值、流通市值、行业、量比
+    """
+
+    pro = get_tushare_pro()
+
+    print("正在使用 Tushare 获取 A 股基础数据...")
+
+    basic_df = load_stock_basic(pro)
+    daily_basic_df = find_latest_daily_basic(pro)
+
+    latest_trade_date = str(daily_basic_df["trade_date"].iloc[0])
+    daily_df = find_latest_daily_quote(pro, latest_trade_date)
+
+    # 合并：基础信息 + 市值估值数据
+    df = basic_df.merge(daily_basic_df, on="ts_code", how="inner")
+
+    # 合并：日行情数据，补充涨跌幅和成交额
+    if daily_df is not None and not daily_df.empty:
+        quote_cols = ["ts_code", "pct_chg", "amount"]
+        quote_cols = [col for col in quote_cols if col in daily_df.columns]
+        df = df.merge(daily_df[quote_cols], on="ts_code", how="left")
+    else:
+        df["pct_chg"] = pd.NA
+        df["amount"] = pd.NA
+
+    result = pd.DataFrame()
+
+    result["代码"] = df["symbol"].astype(str).str.zfill(6)
+    result["名称"] = df["name"]
+    result["地区"] = df.get("area")
+    result["行业"] = df.get("industry")
+    result["市场"] = df.get("market")
+    result["上市日期"] = df.get("list_date")
+    result["交易日"] = latest_trade_date
+
+    # daily_basic 的 close 一般就是最新收盘价
+    result["最新价"] = pd.to_numeric(df.get("close"), errors="coerce")
+    result["涨跌幅"] = pd.to_numeric(df.get("pct_chg"), errors="coerce")
+
+    # Tushare daily amount 单位通常是千元，转成元，兼容原 filters/main 的换算逻辑
+    result["成交额"] = pd.to_numeric(df.get("amount"), errors="coerce") * 1000
+
+    # Tushare daily_basic total_mv/circ_mv 单位通常是万元，转成元，兼容原 filters.py
+    result["总市值"] = pd.to_numeric(df.get("total_mv"), errors="coerce") * 10000
+    result["流通市值"] = pd.to_numeric(df.get("circ_mv"), errors="coerce") * 10000
+
+    result["总市值_亿元"] = result["总市值"] / 100000000
+    result["流通市值_亿元"] = result["流通市值"] / 100000000
+
+    result["量比"] = pd.to_numeric(df.get("volume_ratio"), errors="coerce")
+    result["市盈率"] = pd.to_numeric(df.get("pe"), errors="coerce")
+    result["市净率"] = pd.to_numeric(df.get("pb"), errors="coerce")
+
+    print("Tushare 数据整理完成。")
+    print("当前字段：")
+    print(result.columns.tolist())
+    print(f"原始合并后股票数量：{len(result)}")
+
+    os.makedirs("cache", exist_ok=True)
+    cache_file = f"cache/tushare_a_stock_spot_{latest_trade_date}.csv"
+    result.to_csv(cache_file, index=False, encoding="utf-8-sig")
+    print(f"Tushare 原始数据缓存已保存：{cache_file}")
+
+    return result
