@@ -139,6 +139,7 @@
 | Excel 支持 | openpyxl |
 | 数据缓存 | CSV |
 | 运行环境 | Windows / Linux / macOS |
+| 容器化 | Docker |
 
 ---
 
@@ -189,6 +190,42 @@ python main.py
 
 ---
 
+## 🐳 Docker 运行
+
+项目支持 Docker 容器化部署，无需手动安装 Python 和依赖。
+
+### 构建镜像
+
+```bash
+docker build -t stock-selection .
+```
+
+### 运行选股
+
+```bash
+docker run --rm \
+  -v $(pwd)/output:/app/output \
+  -v $(pwd)/cache:/app/cache \
+  stock-selection
+```
+
+运行结果会自动输出到本地 `output/` 目录，缓存数据保存在 `cache/` 目录。
+
+### 使用 VS Code 任务
+
+项目内置 `.vscode/tasks.json`，在 VS Code 中可通过 `Ctrl+Shift+P` → `Tasks: Run Task` 快速执行以下任务：
+
+| 任务 | 说明 |
+|---|---|
+| 运行选股程序 | 直接运行 `python main.py`（默认构建任务） |
+| 安装依赖 | 使用清华源安装 `requirements.txt` |
+| Docker 构建镜像 | 构建 Docker 镜像 |
+| Docker 运行选股 | 通过 Docker 容器运行选股 |
+| 运行测试 | 执行 pytest 测试 |
+| 清理缓存 | 清除 `cache/` 和 `__pycache__/` |
+
+---
+
 ## 📁 项目结构
 
 ```text
@@ -200,6 +237,10 @@ stock_selection/
 ├── strategy.py
 ├── concept_analyzer.py
 ├── requirements.txt
+├── Dockerfile
+├── .dockerignore
+├── .vscode/
+│   └── tasks.json
 ├── cache/
 ├── output/
 ├── test/
@@ -215,6 +256,9 @@ stock_selection/
 | `strategy.py` | 技术策略模块，负责通过 BaoStock 获取个股历史日 K 线数据，计算均线、成交量、涨停次数等指标，并执行箱体突破、底部放量反转等主升信号策略。 |
 | `concept_analyzer.py` | 题材分析模块，负责从东方财富接口获取命中股票的概念题材，并统计多个股票共同命中的题材，用于辅助判断题材共振情况。 |
 | `requirements.txt` | Python 依赖列表，记录项目运行所需的第三方库，例如 `akshare`、`pandas`、`openpyxl`、`baostock` 等。 |
+| `Dockerfile` | Docker 容器构建文件，基于 `python:3.11-slim`，支持使用清华源加速依赖安装，并声明 `output/` 和 `cache/` 数据卷。 |
+| `.dockerignore` | Docker 构建排除文件，排除 `.git`、`__pycache__`、`cache`、`output`、`test` 等非必要文件以减小镜像体积。 |
+| `.vscode/tasks.json` | VS Code 任务配置文件，包含运行选股、安装依赖、Docker 构建/运行、测试和清理缓存等快捷任务。 |
 | `cache/` | 本地缓存目录，用于保存行业映射、历史 K 线、题材数据等缓存文件，避免每次运行都重新请求接口。 |
 | `output/` | 结果输出目录，用于保存基础股票池、主升信号筛选结果、题材共振结果等 Excel 文件。 |
 | `test/` | 测试目录，可用于存放临时测试脚本、功能验证代码或接口调试文件。 |
