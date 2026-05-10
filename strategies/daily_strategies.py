@@ -4,7 +4,24 @@ import pandas as pd
 
 from .base_strategy import BaseDailyStrategy
 
+class VShapeReversalStrategy(BaseDailyStrategy):
+    """N22-V型反转：急跌后放量反弹，最佳持仓4天，胜率67.27%。"""
 
+    name = "V型反转"
+    category = "突破反转"
+
+    def match(self, row: pd.Series) -> bool:
+        dist_40d = row["收盘"] / row["过去40日最低价"] - 1
+        if dist_40d >= 0.15:
+            return False
+        if row["昨涨跌"] >= -1:
+            return False
+        return (
+            row["涨跌幅"] > 4
+            and row["成交量"] > row["过去20日平均成交量"] * 1.8
+            and row["收盘"] > row["开盘"]
+        )
+        
 class BoxBreakoutStrategy(BaseDailyStrategy):
     """策略1：箱体突破。"""
 

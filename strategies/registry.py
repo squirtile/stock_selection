@@ -8,6 +8,7 @@ from .daily_strategies import (
     MainBoxBreakoutStrategy,
     MainBullishMAAlignmentStrategy,
     MainPullbackStartStrategy,
+    VShapeReversalStrategy,
 )
 
 
@@ -26,6 +27,7 @@ def get_daily_strategies() -> list[BaseDailyStrategy]:
         MainBottomVolumeReversalStrategy(),
         MainPullbackStartStrategy(),
         MainBullishMAAlignmentStrategy(),
+        VShapeReversalStrategy(),
     ]
 
 
