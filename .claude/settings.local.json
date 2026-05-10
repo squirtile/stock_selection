@@ -1,0 +1,15 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python backtest/analyze_strategies.py)",
+      "Bash(python -c ' *)",
+      "Bash(python backtest/read_result.py)",
+      "Bash(python backtest/strategy_isolated_test.py)",
+      "Bash(python backtest/param_tuning.py)",
+      "Bash(python backtest/advanced_backtest.py)",
+      "mcp__ide__executeCode",
+      "Bash(python *)",
+      "Bash(python3 -c ' *)"
+    ]
+  }
+}

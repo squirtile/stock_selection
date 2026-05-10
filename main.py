@@ -86,35 +86,66 @@ def print_strategy_descriptions():
 # 终端中文对齐显示
 # =========================
 
-def align_text(text, width, align="left"):
+def align_text(text, width: int, align: str = "left") -> str:
     """
-    按中文显示宽度对齐字符串。
-    中文字符通常占2个宽度，英文数字占1个宽度。
+    按终端显示宽度对齐字符串。
+    中文、全角符号宽度按 2 计算，英文数字按 1 计算。
     """
+    if pd.isna(text):
+        text = ""
 
-    text = "" if pd.isna(text) else str(text)
+    text = str(text)
     text_width = wcswidth(text)
 
-    padding = width - text_width
+    if text_width < 0:
+        text_width = len(text)
 
-    if padding <= 0:
-        return text
+    padding = max(width - text_width, 0)
 
     if align == "right":
         return " " * padding + text
-
-    if align == "center":
+    elif align == "center":
         left = padding // 2
         right = padding - left
         return " " * left + text + " " * right
+    else:
+        return text + " " * padding
 
-    return text + " " * padding
+
+def shorten_text(text, max_width: int) -> str:
+    """
+    按显示宽度截断字符串，避免策略字段过长导致整张表太宽。
+    """
+    if pd.isna(text):
+        return ""
+
+    text = str(text)
+
+    if wcswidth(text) <= max_width:
+        return text
+
+    result = ""
+    current_width = 0
+
+    for ch in text:
+        ch_width = wcswidth(ch)
+
+        if ch_width < 0:
+            ch_width = 1
+
+        if current_width + ch_width > max_width - 2:
+            break
+
+        result += ch
+        current_width += ch_width
+
+    return result + ".."
 
 
 def print_stock_table(df: pd.DataFrame, max_rows: int = 50):
     """
     终端中以纯文本方式展示股票结果。
-    解决中文列名、中文股票名、行业名导致的错位问题。
+    解决中文列名、中文股票名、行业名、长策略字段导致的错位问题。
     """
 
     if df is None or df.empty:
@@ -145,7 +176,11 @@ def print_stock_table(df: pd.DataFrame, max_rows: int = 50):
     if "代码" in show_df.columns:
         show_df["代码"] = show_df["代码"].astype(str).str.zfill(6)
 
-    # 数字格式化
+    if "K线日期" in show_df.columns:
+        show_df["K线日期"] = pd.to_datetime(
+            show_df["K线日期"], errors="coerce"
+        ).dt.strftime("%Y-%m-%d")
+
     for col in ["最新价", "涨跌幅", "市值_亿元", "量比"]:
         if col in show_df.columns:
             show_df[col] = pd.to_numeric(show_df[col], errors="coerce").map(
@@ -158,16 +193,27 @@ def print_stock_table(df: pd.DataFrame, max_rows: int = 50):
                 lambda x: "" if pd.isna(x) else str(int(x))
             )
 
+    # 长字段截断，避免终端太宽
+    max_display_widths = {
+        "题材": 24,
+        "突破反转策略": 24,
+        "主升策略": 34,
+    }
+
+    for col, max_width in max_display_widths.items():
+        if col in show_df.columns:
+            show_df[col] = show_df[col].map(lambda x: shorten_text(x, max_width))
+
     min_widths = {
         "代码": 8,
         "名称": 10,
         "题材": 20,
-        "K线日期": 12,
-        "信号类型": 14,
+        "K线日期": 10,
+        "信号类型": 8,
         "最新价": 8,
         "涨跌幅": 8,
         "行业": 12,
-        "突破反转策略": 18,
+        "突破反转策略": 16,
         "主升策略": 26,
         "命中策略数": 10,
         "市值_亿元": 10,
@@ -178,10 +224,14 @@ def print_stock_table(df: pd.DataFrame, max_rows: int = 50):
     col_widths = {}
 
     for col in show_cols:
-        max_width = wcswidth(col)
+        max_width = wcswidth(str(col))
 
         for value in show_df[col].astype(str).tolist():
-            max_width = max(max_width, wcswidth(value))
+            value_width = wcswidth(value)
+            if value_width < 0:
+                value_width = len(value)
+
+            max_width = max(max_width, value_width)
 
         col_widths[col] = max(max_width, min_widths.get(col, 8))
 
@@ -217,7 +267,6 @@ def print_stock_table(df: pd.DataFrame, max_rows: int = 50):
             row_parts.append(align_text(row[col], col_widths[col], align))
 
         print(" | ".join(row_parts))
-
 
 def print_concept_resonance(resonance_summary_df: pd.DataFrame):
     """
@@ -499,7 +548,7 @@ def split_export_sections(export_signal_df: pd.DataFrame):
 # 主程序
 # =========================
 
-def run_daily():
+def run_daily(max_workers: int = 4):
     disable_proxy()
 
     selected_df = load_or_create_base_pool()
@@ -514,7 +563,7 @@ def run_daily():
 
     print("\n开始执行第二步：信号策略扫描...")
 
-    signal_df = scan_main_rising_stocks(selected_df)
+    signal_df = scan_main_rising_stocks(selected_df, max_workers=max_workers)
 
     if signal_df is None or signal_df.empty:
         print("今日没有股票命中信号。")
@@ -706,8 +755,8 @@ def parse_args():
     parser.add_argument(
         "--max-workers",
         type=int,
-        default=4,
-        help="realtime 模式下并发获取实时行情的线程数，默认4。",
+        default=1,
+        help="并发线程数。daily 模式用于日线扫描，realtime 模式用于实时行情和分钟确认，默认4。",
     )
 
     parser.add_argument(
@@ -739,7 +788,7 @@ def main():
     if args.mode == "realtime":
         run_realtime(args)
     else:
-        run_daily()
+        run_daily(max_workers=args.max_workers)
 
 
 if __name__ == "__main__":

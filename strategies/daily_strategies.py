@@ -5,89 +5,93 @@ import pandas as pd
 from .base_strategy import BaseDailyStrategy
 
 
-class BoxBreakoutStrategy(BaseDailyStrategy):
-    """策略1：箱体突破。"""
+class VShapeReversalStrategy(BaseDailyStrategy):
+    """N22-V型反转：急跌后放量反弹，最佳持仓4天，胜率67.27%。"""
 
-    name = "箱体突破"
+    name = "V型反转"
+    category = "突破反转"
+
+    def match(self, row: pd.Series) -> bool:
+        dist_40d = row["收盘"] / row["过去40日最低价"] - 1
+        if dist_40d >= 0.15:
+            return False
+        if row["昨涨跌"] >= -1:
+            return False
+        return (
+            row["涨跌幅"] > 4
+            and row["成交量"] > row["过去20日平均成交量"] * 1.8
+            and row["收盘"] > row["开盘"]
+        )
+
+
+class DoubleBottomVolumeReversalStrategy(BaseDailyStrategy):
+    """N1-双底放量反转：双底支撑 + 放量反转，最佳持仓4天，胜率57.14%。"""
+
+    name = "双底放量反转"
+    category = "突破反转"
+
+    def match(self, row: pd.Series) -> bool:
+        dist_40d = row["收盘"] / row["过去40日最低价"] - 1
+        dist_60d = row["收盘"] / row["过去60日最低收盘"] - 1
+        return (
+            dist_40d < 0.15
+            and dist_60d < 0.20
+            and row["涨跌幅"] > 3
+            and row["成交量"] > row["过去20日平均成交量"] * 1.8
+            and row["收盘"] > row["开盘"]
+        )
+
+
+class ShrinkPullbackCounterStrategy(BaseDailyStrategy):
+    """N2-缩量回踩反击：昨缩量洗盘 + 今放量反击，最佳持仓1天，胜率53.01%。"""
+
+    name = "缩量回踩反击"
     category = "突破反转"
 
     def match(self, row: pd.Series) -> bool:
         return (
-            row["收盘"] > row["过去60日最高价"]
-            and row["成交量"] > row["过去20日平均成交量"] * 1.3
-            and row["过去20日实体振幅"] <= 0.20
-        )
-
-
-class BottomVolumeReversalStrategy(BaseDailyStrategy):
-    """策略2：底部放量反转。"""
-
-    name = "底部放量反转"
-    category = "突破反转"
-
-    def match(self, row: pd.Series) -> bool:
-        distance_from_40d_low = row["收盘"] / row["过去40日最低价"] - 1
-        return (
-            distance_from_40d_low < 0.20
-            and row["涨跌幅"] > 5
-            and row["成交量"] > row["过去20日平均成交量"] * 2
-        )
-
-
-class MainBoxBreakoutStrategy(BaseDailyStrategy):
-    """主升策略1：股价创60天新高，伴随放量。"""
-
-    name = "主升-箱体突破"
-    category = "主升"
-
-    def match(self, row: pd.Series) -> bool:
-        return (
-            row["收盘"] > row["过去60日最高收盘"]
-            and row["成交量"] > row["过去20日平均成交量"] * 1.5
-        )
-
-
-class MainBottomVolumeReversalStrategy(BaseDailyStrategy):
-    """主升策略2：长期低位 + 突然放量大涨。"""
-
-    name = "主升-底部放量反转"
-    category = "主升"
-
-    def match(self, row: pd.Series) -> bool:
-        distance_from_low = row["收盘"] / row["过去60日最低收盘"] - 1
-        return (
-            distance_from_low < 0.30
-            and row["涨跌幅"] > 5
-            and row["成交量"] > row["过去20日平均成交量"] * 2
-        )
-
-
-class MainPullbackStartStrategy(BaseDailyStrategy):
-    """主升策略3：缩量回调启动。"""
-
-    name = "主升-缩量回调启动"
-    category = "主升"
-
-    def match(self, row: pd.Series) -> bool:
-        return (
-            row["SMA5"] < row["SMA20"]
-            and row["SMA60"] > row["SMA60_5日前"]
+            row["昨量"] < row["过去20日平均成交量"] * 0.5
+            and row["成交量"] > row["过去20日平均成交量"] * 1.8
+            and row["量比昨"] > 1.3
+            and row["涨跌幅"] > 1
             and row["收盘"] > row["SMA5"]
-            and row["成交量"] > row["过去20日平均成交量"] * 1.5
+            and row["SMA20"] > row["SMA60"]
         )
 
 
-class MainBullishMAAlignmentStrategy(BaseDailyStrategy):
-    """主升策略4：均线多头排列。"""
+class LimitUpShrinkReExpandStrategy(BaseDailyStrategy):
+    """N24-涨停缩量再放：有涨停基因 + 缩量回踩 + 再放量启动，胜率52.48%。"""
 
-    name = "主升-均线多头排列"
+    name = "涨停缩量再放"
     category = "主升"
 
     def match(self, row: pd.Series) -> bool:
         return (
-            row["SMA5"] > row["SMA10"]
-            and row["SMA10"] > row["SMA20"]
-            and row["SMA20"] > row["SMA60"]
+            row["近15日涨停次数"] >= 1
+            and row["昨量"] < row["过去20日平均成交量"] * 0.7
+            and row["量比昨"] > 1.5
             and row["涨跌幅"] > 2
-            and row["成交量"] > row["过去20日平均成交量"] * 1.2
+            and row["收盘"] > row["SMA10"]
+            and row["SMA20"] > row["SMA60"]
+        )
+
+
+class MAPinchBreakoutStrategy(BaseDailyStrategy):
+    """N5-均线粘合突破：MA5/10/20粘合后放量突破，胜率52.39%，信号量大。"""
+
+    name = "均线粘合突破"
+    category = "突破反转"
+
+    def match(self, row: pd.Series) -> bool:
+        ma_pinch = (
+            abs(row["SMA5"] / row["SMA10"] - 1) < 0.03
+            and abs(row["SMA10"] / row["SMA20"] - 1) < 0.05
+        )
+        if not ma_pinch:
+            return False
+        max_ma = max(row["SMA5"], row["SMA10"], row["SMA20"])
+        return (
+            row["收盘"] > max_ma
+            and row["成交量"] > row["过去20日平均成交量"] * 1.5
+            and row["涨跌幅"] > 3
         )
