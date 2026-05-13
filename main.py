@@ -26,6 +26,11 @@ RUN_SIGNAL_SCAN = True
 # 现在东财接口不稳定时，建议先保持 False
 RUN_CONCEPT_ANALYSIS = False
 
+# 主板普通股票涨停阈值。
+# 当前工程基础池已经排除 ST、创业板、科创板、北交所，
+# 所以这里按主板 10cm 涨停近似判断。
+LIMIT_UP_THRESHOLD = 9.95
+
 
 # =========================
 # 策略说明
@@ -189,6 +194,7 @@ def print_stock_table(df: pd.DataFrame, max_rows: int = 50):
         "信号类型",
         "最新价",
         "涨跌幅",
+        "涨停状态",
         "行业",
         "突破反转策略",
         "主升策略",
@@ -244,6 +250,7 @@ def print_stock_table(df: pd.DataFrame, max_rows: int = 50):
         "信号类型": 14,
         "最新价": 8,
         "涨跌幅": 8,
+        "涨停状态": 10,
         "行业": 12,
         "突破反转策略": 18,
         "主升策略": 26,
@@ -493,6 +500,15 @@ def prepare_signal_export_df(signal_df: pd.DataFrame, stock_theme_map: dict) -> 
     # 防止重复列名导致 pandas 赋值报错
     signal_df = signal_df.loc[:, ~signal_df.columns.duplicated()].copy()
 
+    # 标记当前K线是否涨停，方便后续按“未涨停 / 已涨停”拆分展示和导出。
+    if "涨跌幅" in signal_df.columns:
+        pct_series = pd.to_numeric(signal_df["涨跌幅"], errors="coerce")
+        signal_df["是否涨停"] = pct_series >= LIMIT_UP_THRESHOLD
+        signal_df["涨停状态"] = signal_df["是否涨停"].map(lambda x: "已涨停" if bool(x) else "未涨停")
+    else:
+        signal_df["是否涨停"] = False
+        signal_df["涨停状态"] = "未涨停"
+
     # 所有数字列统一保留 2 位小数
     number_cols = signal_df.select_dtypes(include=["number"]).columns
     for col in number_cols:
@@ -525,6 +541,7 @@ def prepare_signal_export_df(signal_df: pd.DataFrame, stock_theme_map: dict) -> 
         "主升策略",
         "最新价",
         "涨跌幅",
+        "涨停状态",
         "行业",
         # "命中策略",
         "命中策略数",
@@ -570,6 +587,77 @@ def split_export_sections(export_signal_df: pd.DataFrame):
     ].copy()
 
     return breakthrough_df, main_promotion_df
+
+
+def split_limit_up_sections(export_signal_df: pd.DataFrame):
+    """
+    将最终结果先按涨停状态拆成两大类：
+    1. 未涨停
+    2. 已涨停
+
+    后续每一大类内部再继续调用 split_export_sections() 拆分突破反转和纯主升。
+    """
+
+    if export_signal_df is None or export_signal_df.empty:
+        return pd.DataFrame(), pd.DataFrame()
+
+    df = export_signal_df.copy()
+
+    if "是否涨停" in df.columns:
+        is_limit_up = df["是否涨停"].astype(bool)
+    elif "涨停状态" in df.columns:
+        is_limit_up = df["涨停状态"].astype(str).eq("已涨停")
+    elif "涨跌幅" in df.columns:
+        is_limit_up = pd.to_numeric(df["涨跌幅"], errors="coerce") >= LIMIT_UP_THRESHOLD
+    else:
+        is_limit_up = pd.Series(False, index=df.index)
+
+    limit_up_df = df[is_limit_up].copy()
+    not_limit_up_df = df[~is_limit_up].copy()
+
+    return not_limit_up_df, limit_up_df
+
+
+def write_df_to_excel_if_not_empty(writer, df: pd.DataFrame, sheet_name: str):
+    """
+    写入非空 DataFrame，避免生成一堆空 sheet。
+    """
+
+    if df is not None and not df.empty:
+        df.to_excel(writer, sheet_name=sheet_name, index=False)
+
+
+def print_signal_group(title: str, total_df: pd.DataFrame, max_rows: int = 50):
+    """
+    终端展示：先按未涨停 / 已涨停分大类，
+    每个大类里面再拆突破反转、主升信号。
+    """
+
+    print("\n" + "=" * 100)
+    print(title)
+    print("=" * 100)
+
+    if total_df is None or total_df.empty:
+        print("没有股票。")
+        return
+
+    breakthrough_df, main_promotion_df = split_export_sections(total_df)
+
+    print(f"{title} 总数：{len(total_df)}")
+    print(f"{title} - 突破反转数量：{len(breakthrough_df)}")
+    print(f"{title} - 主升信号数量：{len(main_promotion_df)}")
+
+    print(f"\n{title} - 突破反转股票预览：")
+    if breakthrough_df.empty:
+        print("没有突破反转类信号。")
+    else:
+        print_stock_table(breakthrough_df, max_rows=max_rows)
+
+    print(f"\n{title} - 主升信号股票预览：")
+    if main_promotion_df.empty:
+        print("没有主升类信号。")
+    else:
+        print_stock_table(main_promotion_df, max_rows=max_rows)
 
 
 # =========================
@@ -620,31 +708,37 @@ def run_daily():
 
     export_signal_df = prepare_signal_export_df(signal_df, stock_theme_map)
 
-    breakthrough_df, main_promotion_df = split_export_sections(export_signal_df)
+    # 第一层：未涨停 / 已涨停
+    not_limit_up_df, limit_up_df = split_limit_up_sections(export_signal_df)
+
+    # 第二层：每一类内部继续按“突破反转 / 纯主升”细分
+    all_breakthrough_df, all_main_promotion_df = split_export_sections(export_signal_df)
+    not_limit_up_breakthrough_df, not_limit_up_main_promotion_df = split_export_sections(not_limit_up_df)
+    limit_up_breakthrough_df, limit_up_main_promotion_df = split_export_sections(limit_up_df)
 
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     signal_output_file = f"output/a_stock_signal_selected_{timestamp}.xlsx"
 
     with pd.ExcelWriter(signal_output_file, engine="openpyxl") as writer:
+        # 总览 sheet
         export_signal_df.to_excel(
             writer,
             sheet_name="全部信号",
             index=False
         )
 
-        if not breakthrough_df.empty:
-            breakthrough_df.to_excel(
-                writer,
-                sheet_name="突破反转",
-                index=False
-            )
+        # 保留原来的大类 sheet，兼容你之前的查看习惯
+        write_df_to_excel_if_not_empty(writer, all_breakthrough_df, "全部_突破反转")
+        write_df_to_excel_if_not_empty(writer, all_main_promotion_df, "全部_主升信号")
 
-        if not main_promotion_df.empty:
-            main_promotion_df.to_excel(
-                writer,
-                sheet_name="主升信号",
-                index=False
-            )
+        # 新增：先分未涨停 / 已涨停，再在内部细分
+        write_df_to_excel_if_not_empty(writer, not_limit_up_df, "未涨停_全部")
+        write_df_to_excel_if_not_empty(writer, not_limit_up_breakthrough_df, "未涨停_突破反转")
+        write_df_to_excel_if_not_empty(writer, not_limit_up_main_promotion_df, "未涨停_主升信号")
+
+        write_df_to_excel_if_not_empty(writer, limit_up_df, "涨停_全部")
+        write_df_to_excel_if_not_empty(writer, limit_up_breakthrough_df, "涨停_突破反转")
+        write_df_to_excel_if_not_empty(writer, limit_up_main_promotion_df, "涨停_主升信号")
 
         if resonance_summary_df is not None and not resonance_summary_df.empty:
             resonance_summary_df.to_excel(
@@ -665,21 +759,14 @@ def run_daily():
     print_concept_resonance(resonance_summary_df)
 
     print(f"全部信号股票数量：{len(export_signal_df)}")
-    print(f"突破反转股票数量：{len(breakthrough_df)}")
-    print(f"主升信号股票数量：{len(main_promotion_df)}")
+    print(f"未涨停股票数量：{len(not_limit_up_df)}")
+    print(f"已涨停股票数量：{len(limit_up_df)}")
+    print(f"全部突破反转股票数量：{len(all_breakthrough_df)}")
+    print(f"全部主升信号股票数量：{len(all_main_promotion_df)}")
     print(f"信号结果已导出：{signal_output_file}")
 
-    print("\n突破反转股票预览：")
-    if breakthrough_df.empty:
-        print("今日没有突破反转类信号。")
-    else:
-        print_stock_table(breakthrough_df, max_rows=50)
-
-    print("\n主升信号股票预览：")
-    if main_promotion_df.empty:
-        print("今日没有主升类信号。")
-    else:
-        print_stock_table(main_promotion_df, max_rows=50)
+    print_signal_group("未涨停信号", not_limit_up_df, max_rows=50)
+    print_signal_group("已涨停信号", limit_up_df, max_rows=50)
 
 
 # =========================

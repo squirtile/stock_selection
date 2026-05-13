@@ -10,7 +10,7 @@ from config import TUSHARE_TOKEN, TUSHARE_HTTP_URL
 
 MINUTE_CACHE_DIR = "cache/minute"
 MINUTE_OUTPUT_DIR = "output/minute_buy_points"
-DEFAULT_MINUTE_DAYS = 10
+DEFAULT_MINUTE_DAYS = 5
 
 _TUSHARE_PRO = None
 _TUSHARE_PRO_LOCK = threading.Lock()
