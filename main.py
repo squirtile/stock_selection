@@ -80,6 +80,10 @@ def print_strategy_descriptions():
     print("条件：SMA5 > SMA10 > SMA20 > SMA60；今日涨幅 > 2%；今日成交量 > 过去20日平均成交量 × 1.2")
     print()
 
+    print("主升策略5：主升-大阳缩量回踩")
+    print("条件：最近8个交易日内出现过涨幅 >= 8%的放量大阳线；随后至少整理2天，回踩不有效跌破5日或10日线，回调缩量，当前仍在10日线附近上方，且当前涨幅 < 9.5%")
+    print()
+
     print("统一二次过滤：")
     print("条件1：过去20个交易日日均成交额 >= 5000万元")
     print("条件2：过去15个交易日内，含今日，至少出现1次涨停；主板涨停定义为单日涨幅 >= 9.95%")
@@ -198,6 +202,7 @@ def print_stock_table(df: pd.DataFrame, max_rows: int = 50):
         "行业",
         "突破反转策略",
         "主升策略",
+        "启动回踩策略",
         "命中策略数",
         "市值_亿元",
         "量比",
@@ -236,6 +241,7 @@ def print_stock_table(df: pd.DataFrame, max_rows: int = 50):
         "行业": 12,
         "突破反转策略": 22,
         "主升策略": 34,
+        "启动回踩策略": 26,
     }
 
     for col, max_width in max_display_widths.items():
@@ -254,6 +260,7 @@ def print_stock_table(df: pd.DataFrame, max_rows: int = 50):
         "行业": 12,
         "突破反转策略": 18,
         "主升策略": 26,
+        "启动回踩策略": 22,
         "命中策略数": 10,
         "市值_亿元": 10,
         "量比": 8,
@@ -437,9 +444,12 @@ def split_strategy_text(strategy_text: str):
 
     breakthrough_strategies = []
     main_promotion_strategies = []
+    pullback_strategies = []
 
     for item in strategies:
-        if item.startswith("主升-"):
+        if "大阳缩量回踩" in item or "大阳启动" in item:
+            pullback_strategies.append(item)
+        elif item.startswith("主升-"):
             main_promotion_strategies.append(item)
         else:
             breakthrough_strategies.append(item)
@@ -452,12 +462,17 @@ def split_strategy_text(strategy_text: str):
     if main_promotion_strategies:
         signal_types.append("主升")
 
+    if pullback_strategies:
+        signal_types.append("启动回踩")
+
     return {
         "信号类型": "、".join(signal_types),
         "突破反转策略": "、".join(breakthrough_strategies),
         "主升策略": "、".join(main_promotion_strategies),
+        "启动回踩策略": "、".join(pullback_strategies),
         "突破反转策略数": len(breakthrough_strategies),
         "主升策略数": len(main_promotion_strategies),
+        "启动回踩策略数": len(pullback_strategies),
         "命中策略数": len(strategies),
     }
 
@@ -539,6 +554,7 @@ def prepare_signal_export_df(signal_df: pd.DataFrame, stock_theme_map: dict) -> 
         "信号类型",
         "突破反转策略",
         "主升策略",
+        "启动回踩策略",
         "最新价",
         "涨跌幅",
         "涨停状态",
@@ -616,6 +632,193 @@ def split_limit_up_sections(export_signal_df: pd.DataFrame):
     not_limit_up_df = df[~is_limit_up].copy()
 
     return not_limit_up_df, limit_up_df
+
+
+
+# =========================
+# 按具体策略拆分展示 / 导出
+# =========================
+
+STRATEGY_DISPLAY_ORDER = [
+    "箱体突破",
+    "底部放量反转",
+    "V型反转",
+    "主升-箱体突破",
+    "主升-底部放量反转",
+    "主升-缩量回调启动",
+    "主升-均线多头排列",
+    "主升-大阳缩量回踩",
+    "大阳缩量回踩",
+]
+
+
+def split_strategy_items(strategy_text) -> list[str]:
+    """把“策略1、策略2”拆成列表。"""
+
+    if pd.isna(strategy_text):
+        return []
+
+    return [
+        item.strip()
+        for item in str(strategy_text).split("、")
+        if item.strip()
+    ]
+
+
+def format_strategy_group_name(strategy_name: str) -> str:
+    """
+    终端标题和 Excel sheet 使用的策略名。
+    对“大阳缩量回踩”去掉“主升-”前缀，让它作为独立形态更醒目。
+    """
+
+    name = str(strategy_name).strip()
+
+    if name in {"主升-大阳缩量回踩", "主升-大阳启动缩量回踩"}:
+        return name.replace("主升-", "")
+
+    return name
+
+
+def strategy_sort_key(strategy_name: str):
+    """按预设策略顺序排序，未配置的新策略排在后面。"""
+
+    raw_name = str(strategy_name).strip()
+    display_name = format_strategy_group_name(raw_name)
+
+    candidates = [raw_name, display_name]
+    for candidate in candidates:
+        if candidate in STRATEGY_DISPLAY_ORDER:
+            return (STRATEGY_DISPLAY_ORDER.index(candidate), display_name)
+
+    return (999, display_name)
+
+
+def split_by_specific_strategy(export_signal_df: pd.DataFrame) -> dict[str, pd.DataFrame]:
+    """
+    按具体命中策略拆分。
+
+    说明：
+    - 一只股票如果命中多个策略，会同时出现在多个策略分组里；
+    - 总览 sheet 不重复，分策略 sheet 用于看盘时快速定位形态；
+    - 兼容未来新增的“启动回踩策略”列。
+    """
+
+    if export_signal_df is None or export_signal_df.empty:
+        return {}
+
+    strategy_columns = [
+        "突破反转策略",
+        "主升策略",
+        "启动回踩策略",
+    ]
+
+    bucket: dict[str, list[dict]] = {}
+
+    for _, row in export_signal_df.iterrows():
+        row_dict = row.to_dict()
+
+        for col in strategy_columns:
+            if col not in export_signal_df.columns:
+                continue
+
+            for strategy_name in split_strategy_items(row.get(col, "")):
+                display_name = format_strategy_group_name(strategy_name)
+                bucket.setdefault(display_name, []).append(row_dict)
+
+    result: dict[str, pd.DataFrame] = {}
+
+    for strategy_name in sorted(bucket.keys(), key=strategy_sort_key):
+        df = pd.DataFrame(bucket[strategy_name]).copy()
+
+        if df.empty:
+            continue
+
+        if "代码" in df.columns:
+            df["代码"] = df["代码"].astype(str).str.zfill(6)
+            df = df.drop_duplicates(subset=["代码"], keep="first")
+
+        sort_cols = []
+        ascending = []
+
+        if "命中策略数" in df.columns:
+            sort_cols.append("命中策略数")
+            ascending.append(False)
+
+        if "量比" in df.columns:
+            sort_cols.append("量比")
+            ascending.append(False)
+
+        if sort_cols:
+            df = df.sort_values(by=sort_cols, ascending=ascending)
+
+        result[strategy_name] = df
+
+    return result
+
+
+def safe_excel_sheet_name(name: str, used_names: set[str] | None = None) -> str:
+    """清理 Excel sheet 名，处理非法字符、31字符限制和重名。"""
+
+    used_names = used_names if used_names is not None else set()
+    sheet_name = str(name).strip() or "Sheet"
+
+    for ch in ["\\", "/", "*", "[", "]", ":", "?"]:
+        sheet_name = sheet_name.replace(ch, "")
+
+    sheet_name = sheet_name.replace(" ", "")
+    base_name = sheet_name[:31] or "Sheet"
+    final_name = base_name
+
+    counter = 1
+    while final_name in used_names:
+        suffix = f"_{counter}"
+        final_name = base_name[:31 - len(suffix)] + suffix
+        counter += 1
+
+    used_names.add(final_name)
+    return final_name
+
+
+def write_strategy_sections_to_excel(writer, df: pd.DataFrame, prefix: str):
+    """把某个大类下的股票继续按具体策略写入多个 sheet。"""
+
+    strategy_map = split_by_specific_strategy(df)
+    used_names = set(writer.sheets.keys())
+
+    for strategy_name, strategy_df in strategy_map.items():
+        sheet_name = safe_excel_sheet_name(f"{prefix}_{strategy_name}", used_names)
+        write_df_to_excel_if_not_empty(writer, strategy_df, sheet_name)
+
+
+def print_signal_group_by_strategy(title: str, total_df: pd.DataFrame, max_rows: int = 50):
+    """
+    终端展示：先按未涨停 / 已涨停分大类，
+    再按每一个具体策略分小类展示。
+    """
+
+    print("\n" + "=" * 100)
+    print(title)
+    print("=" * 100)
+
+    if total_df is None or total_df.empty:
+        print("没有股票。")
+        return
+
+    strategy_map = split_by_specific_strategy(total_df)
+
+    print(f"{title} 总数：{len(total_df)}")
+    print(f"{title} 具体策略分组数量：{len(strategy_map)}")
+
+    if not strategy_map:
+        print("没有可拆分的具体策略。")
+        print_stock_table(total_df, max_rows=max_rows)
+        return
+
+    for strategy_name, strategy_df in strategy_map.items():
+        print("\n" + "-" * 100)
+        print(f"{title} - {strategy_name}：{len(strategy_df)} 只")
+        print("-" * 100)
+        print_stock_table(strategy_df, max_rows=max_rows)
 
 
 def write_df_to_excel_if_not_empty(writer, df: pd.DataFrame, sheet_name: str):
@@ -740,6 +943,11 @@ def run_daily():
         write_df_to_excel_if_not_empty(writer, limit_up_breakthrough_df, "涨停_突破反转")
         write_df_to_excel_if_not_empty(writer, limit_up_main_promotion_df, "涨停_主升信号")
 
+        # 新增：未涨停 / 涨停 内部继续按具体策略拆分 sheet。
+        # 例如：未涨停_主升-均线多头排列、未涨停_大阳缩量回踩。
+        write_strategy_sections_to_excel(writer, not_limit_up_df, "未涨停")
+        write_strategy_sections_to_excel(writer, limit_up_df, "涨停")
+
         if resonance_summary_df is not None and not resonance_summary_df.empty:
             resonance_summary_df.to_excel(
                 writer,
@@ -763,10 +971,12 @@ def run_daily():
     print(f"已涨停股票数量：{len(limit_up_df)}")
     print(f"全部突破反转股票数量：{len(all_breakthrough_df)}")
     print(f"全部主升信号股票数量：{len(all_main_promotion_df)}")
+    print(f"未涨停具体策略分组数量：{len(split_by_specific_strategy(not_limit_up_df))}")
+    print(f"已涨停具体策略分组数量：{len(split_by_specific_strategy(limit_up_df))}")
     print(f"信号结果已导出：{signal_output_file}")
 
-    print_signal_group("未涨停信号", not_limit_up_df, max_rows=50)
-    print_signal_group("已涨停信号", limit_up_df, max_rows=50)
+    print_signal_group_by_strategy("未涨停信号", not_limit_up_df, max_rows=50)
+    print_signal_group_by_strategy("已涨停信号", limit_up_df, max_rows=50)
 
 
 # =========================

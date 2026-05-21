@@ -156,16 +156,15 @@ class VolumeReversalMinuteStrategy(BaseMinuteStrategy):
 
 class OneMinuteBuyStrategy(BaseMinuteStrategy):
     """
-    1分钟精确买点确认。
+    1分钟入场观察。
 
     注意：
-    - 这个策略不是替代 30分钟 / 5分钟策略；
-    - 30分钟趋势过滤在 registry.evaluate_minute_strategies() 中统一执行；
-    - 5分钟结构 / 缠论B点也在 registry 中先执行；
-    - 本策略只负责最后一层 1分钟入场确认。
+    - 这个策略不是自动买入依据，只是 30分钟趋势 + 5分钟结构/缠论B点通过后的最后一层触发；
+    - 当前版本为保守版，重点过滤弱反抽、追高和单根冲高回落；
+    - 建议结合盘口、分时均价线和止损位人工确认。
     """
 
-    name = "1分钟精确买点"
+    name = "1分钟入场观察"
     support_groups = ("主升趋势类", "突破类", "放量启动类", "其他")
 
     def support(self, daily_group: str) -> bool:
@@ -176,11 +175,10 @@ class OneMinuteBuyStrategy(BaseMinuteStrategy):
         df1 = prepare_minute_data(df1)
         df5 = prepare_minute_data(df5)
 
-        if len(df1) < 30 or len(df5) < 20:
+        if len(df1) < 40 or len(df5) < 20:
             return False
 
         latest1 = df1.iloc[-1]
-        prev1 = df1.iloc[-2]
         latest5 = df5.iloc[-1]
 
         if pd.isna(latest1[["MA5", "MA10", "MA20", "VOL20"]]).any():
@@ -189,30 +187,50 @@ class OneMinuteBuyStrategy(BaseMinuteStrategy):
         if pd.isna(latest5[["MA5", "MA10", "MA20"]]).any():
             return False
 
-        # 1分钟短线重新转强
+        # 0. 日内涨幅不能太高，避免把1分钟信号变成追高信号。
+        daily_pct = pd.to_numeric(row.get("涨跌幅", row.get("今日涨跌幅", pd.NA)), errors="coerce")
+        daily_not_too_high = True if pd.isna(daily_pct) else daily_pct < 6.0
+
+        # 1. 1分钟自身结构必须转强：收盘站上MA5/MA10，且MA5明确高于MA10。
         one_min_trend_ok = (
             latest1["收盘"] > latest1["MA5"]
-            and latest1["MA5"] >= latest1["MA10"] * 0.998
+            and latest1["收盘"] > latest1["MA10"]
+            and latest1["MA5"] > latest1["MA10"]
         )
 
-        # 1分钟突破上一根高点，避免只是横盘
-        one_min_restart_ok = latest1["收盘"] > prev1["最高"]
+        # 2. 不能只突破上一根高点，必须突破最近3根1分钟K线高点。
+        recent_3_high = df1["最高"].shift(1).rolling(3).max().iloc[-1]
+        one_min_restart_ok = pd.notna(recent_3_high) and latest1["收盘"] > recent_3_high
 
-        # 不能离5分钟MA5太远，避免追高
+        # 3. 不能离5分钟MA5太远，避免追涨；同时不能明显低于5分钟MA10。
         not_too_far_from_5m_ma5 = (
             latest5["MA5"] > 0
-            and latest1["收盘"] <= latest5["MA5"] * 1.035
+            and latest5["MA10"] > 0
+            and latest1["收盘"] <= latest5["MA5"] * 1.015
+            and latest1["收盘"] >= latest5["MA10"] * 0.995
         )
 
-        # 1分钟量能温和放大
+        # 4. 1分钟量能要有效放大，原来的1.05太容易被噪声触发。
         volume_ok = (
             latest1["VOL20"] > 0
-            and latest1["成交量"] >= latest1["VOL20"] * 1.05
+            and latest1["成交量"] >= latest1["VOL20"] * 1.20
         )
 
+        # 5. 当前1分钟K线不能是明显长上影，避免冲高回落。
+        body = abs(latest1["收盘"] - latest1["开盘"])
+        upper_shadow = latest1["最高"] - max(latest1["收盘"], latest1["开盘"])
+        candle_ok = upper_shadow <= max(body, latest1["收盘"] * 0.0015) * 1.5
+
+        # 6. 1分钟单根不能太弱，也不能瞬间拉太高。
+        intrabar_pct = latest1["收盘"] / latest1["开盘"] - 1 if latest1["开盘"] > 0 else 0
+        intrabar_ok = 0.001 <= intrabar_pct <= 0.020
+
         return bool(
-            one_min_trend_ok
+            daily_not_too_high
+            and one_min_trend_ok
             and one_min_restart_ok
             and not_too_far_from_5m_ma5
             and volume_ok
+            and candle_ok
+            and intrabar_ok
         )

@@ -12,6 +12,11 @@ TUSHARE_TOKEN = os.getenv("TUSHARE_TOKEN", "OaZRxcERYuAvUoZyhzJkwlvfbDvMSRtDlmLM
 # 你购买的 Tushare 代理地址
 TUSHARE_HTTP_URL = os.getenv("TUSHARE_HTTP_URL", "http://8.136.22.187:8011/")
 
+FEISHU_WEBHOOK_URL = "https://open.feishu.cn/open-apis/bot/v2/hook/0fb7635e-9afa-40ea-8254-acb6cb1fff05"
+
+# 可选：是否开启分钟B点飞书推送
+FEISHU_MINUTE_PUSH_ENABLE = True
+
 # =========================
 # 基础股票池筛选条件
 # =========================

@@ -307,8 +307,35 @@ class ChanlunMixin:
 
         return raw, fractal_df, strokes
 
+    def check_5m_trend_guard(self, raw: pd.DataFrame) -> bool:
+        """
+        缠论买点的统一趋势保护。
+
+        目的：过滤5分钟均线下方的弱反抽，避免把下跌中继误判为一买/二买/三买。
+        """
+        if raw is None or len(raw) < 30:
+            return False
+
+        latest = raw.iloc[-1]
+
+        if pd.isna(latest[["MA5", "MA10", "MA20", "VOL20"]]).any():
+            return False
+
+        price_ok = latest["收盘"] > latest["MA10"] and latest["收盘"] > latest["MA20"]
+        ma_structure_ok = latest["MA5"] >= latest["MA10"] * 0.998
+        ma5_slope_ok = latest["MA5"] > raw["MA5"].iloc[-4]
+        ma10_slope_ok = latest["MA10"] >= raw["MA10"].iloc[-4] * 0.998
+
+        # 当前价格不能离最近一小时高点太远，过滤一路下跌后的弱反抽。
+        recent_12_high_close = raw["收盘"].iloc[-12:].max()
+        not_weak_rebound = latest["收盘"] >= recent_12_high_close * 0.985
+
+        return bool(price_ok and ma_structure_ok and ma5_slope_ok and ma10_slope_ok and not_weak_rebound)
+
 
 class ChanlunFirstBuyMinuteStrategy(ChanlunMixin, BaseMinuteStrategy):
+    enabled = False
+
     """
     缠论一买：下跌末端背驰后的反转买点。
 
@@ -328,7 +355,7 @@ class ChanlunFirstBuyMinuteStrategy(ChanlunMixin, BaseMinuteStrategy):
         min_bars: int = 80,
         min_down_strokes: int = 2,
         divergence_ratio: float = 0.85,
-        volume_multiplier: float = 1.05,
+        volume_multiplier: float = 1.20,
     ):
         self.min_bars = min_bars
         self.min_down_strokes = min_down_strokes
@@ -339,6 +366,9 @@ class ChanlunFirstBuyMinuteStrategy(ChanlunMixin, BaseMinuteStrategy):
         raw, _, strokes = self.get_chanlun_context(df5)
 
         if raw is None or len(raw) < self.min_bars:
+            return False
+
+        if not self.check_5m_trend_guard(raw):
             return False
 
         down_strokes = [s for s in strokes if s.direction == "down"]
@@ -355,8 +385,15 @@ class ChanlunFirstBuyMinuteStrategy(ChanlunMixin, BaseMinuteStrategy):
         price_new_low = last_down.low < prev_down.low
         macd_weaker = last_down.macd_area <= prev_down.macd_area * self.divergence_ratio
 
-        ma_recover = pd.notna(latest.get("MA5")) and latest["收盘"] > latest["MA5"]
-        restart = latest["收盘"] > prev["最高"]
+        ma_recover = (
+            pd.notna(latest.get("MA5"))
+            and pd.notna(latest.get("MA10"))
+            and latest["收盘"] > latest["MA5"]
+            and latest["MA5"] >= latest["MA10"] * 0.998
+        )
+
+        recent_high = raw["最高"].shift(1).rolling(6).max().iloc[-1]
+        restart = pd.notna(recent_high) and latest["收盘"] > recent_high
 
         vol20 = latest.get("VOL20")
         volume_ok = pd.notna(vol20) and vol20 > 0 and latest["成交量"] >= vol20 * self.volume_multiplier
@@ -381,7 +418,7 @@ class ChanlunSecondBuyMinuteStrategy(ChanlunMixin, BaseMinuteStrategy):
         self,
         min_bars: int = 70,
         low_tolerance: float = 0.005,
-        volume_multiplier: float = 1.08,
+        volume_multiplier: float = 1.20,
     ):
         self.min_bars = min_bars
         self.low_tolerance = low_tolerance
@@ -391,6 +428,9 @@ class ChanlunSecondBuyMinuteStrategy(ChanlunMixin, BaseMinuteStrategy):
         raw, _, strokes = self.get_chanlun_context(df5)
 
         if raw is None or len(raw) < self.min_bars or len(strokes) < 4:
+            return False
+
+        if not self.check_5m_trend_guard(raw):
             return False
 
         latest = raw.iloc[-1]
@@ -435,7 +475,7 @@ class ChanlunThirdBuyMinuteStrategy(ChanlunMixin, BaseMinuteStrategy):
         min_strokes: int = 5,
         pullback_tolerance: float = 0.01,
         breakout_pct: float = 0.015,
-        volume_multiplier: float = 1.05,
+        volume_multiplier: float = 1.15,
     ):
         self.min_bars = min_bars
         self.min_strokes = min_strokes
@@ -447,6 +487,9 @@ class ChanlunThirdBuyMinuteStrategy(ChanlunMixin, BaseMinuteStrategy):
         raw, _, strokes = self.get_chanlun_context(df5)
 
         if raw is None or len(raw) < self.min_bars or len(strokes) < self.min_strokes:
+            return False
+
+        if not self.check_5m_trend_guard(raw):
             return False
 
         pivot = self.find_latest_pivot(strokes)
@@ -471,11 +514,15 @@ class ChanlunThirdBuyMinuteStrategy(ChanlunMixin, BaseMinuteStrategy):
         ma_recover = (
             pd.notna(latest.get("MA5"))
             and pd.notna(latest.get("MA10"))
+            and pd.notna(latest.get("MA20"))
             and latest["收盘"] > latest["MA5"]
-            and latest["MA5"] >= latest["MA10"] * 0.995
+            and latest["收盘"] > latest["MA10"]
+            and latest["收盘"] > latest["MA20"]
+            and latest["MA5"] >= latest["MA10"] * 0.998
         )
 
-        restart = latest["收盘"] > prev["最高"]
+        recent_high = raw["最高"].shift(1).rolling(6).max().iloc[-1]
+        restart = pd.notna(recent_high) and latest["收盘"] > recent_high
 
         vol20 = latest.get("VOL20")
         volume_ok = pd.notna(vol20) and vol20 > 0 and latest["成交量"] >= vol20 * self.volume_multiplier

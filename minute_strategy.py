@@ -7,11 +7,53 @@ from collections import deque
 import pandas as pd
 from wcwidth import wcswidth
 import tushare as ts
+import requests
 from config import TUSHARE_TOKEN, TUSHARE_HTTP_URL
+
+try:
+    from config import FEISHU_WEBHOOK_URL
+except Exception:
+    FEISHU_WEBHOOK_URL = ""
+
+try:
+    from config import FEISHU_MINUTE_PUSH_ENABLE
+except Exception:
+    FEISHU_MINUTE_PUSH_ENABLE = True
+
+
+try:
+    import winsound
+except ImportError:
+    winsound = None
 
 MINUTE_CACHE_DIR = "cache/minute"
 MINUTE_OUTPUT_DIR = "output/minute_buy_points"
 DEFAULT_MINUTE_DAYS = 5
+
+
+def play_buy_point_sound(times: int = 3):
+    """
+    分钟级B点提示音。
+
+    - Windows: 使用 winsound.Beep 播放三声提示音；
+    - macOS/Linux 或不支持 winsound 时：使用终端响铃字符 \a。
+
+    声音播放失败不会影响策略运行。
+    """
+
+    times = max(1, int(times or 1))
+
+    for _ in range(times):
+        try:
+            if winsound is not None:
+                winsound.Beep(1200, 260)
+                time.sleep(0.08)
+            else:
+                print("\a", end="", flush=True)
+                time.sleep(0.30)
+        except Exception:
+            pass
+
 
 _TUSHARE_PRO = None
 _TUSHARE_PRO_LOCK = threading.Lock()
@@ -937,30 +979,238 @@ def evaluate_minute_buy_point(
     )
     return is_hit, buy_points, group, structure_msg
 
+
+# =========================
+# 飞书分钟级B点推送
+# =========================
+def is_feishu_push_enabled() -> bool:
+    """是否开启飞书分钟级B点推送。"""
+    value = FEISHU_MINUTE_PUSH_ENABLE
+    if isinstance(value, str):
+        return value.strip().lower() not in {"0", "false", "no", "off", "否", "关闭"}
+    return bool(value)
+
+
+def format_percent_value(value) -> str:
+    """格式化涨跌幅。"""
+    try:
+        if pd.isna(value):
+            return "-"
+        return f"{float(value):.2f}%"
+    except Exception:
+        return str(value)
+
+
+def format_price_value(value) -> str:
+    """格式化价格。"""
+    try:
+        if pd.isna(value):
+            return "-"
+        return f"{float(value):.2f}"
+    except Exception:
+        return str(value)
+
+
+def build_feishu_minute_message(df: pd.DataFrame) -> str:
+    """
+    构建飞书文本消息。
+
+    只推送新增分钟级B点，避免 --loop 循环扫描时重复刷屏。
+    """
+    if df is None or df.empty:
+        return ""
+
+    now_text = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    lines = [
+        f"【分钟级B点提醒】{now_text}",
+        f"本轮新增：{len(df)} 只",
+        "",
+    ]
+
+    show_df = df.copy()
+    show_df["代码"] = show_df["代码"].astype(str).str.zfill(6)
+
+    for idx, (_, row) in enumerate(show_df.iterrows(), start=1):
+        code = str(row.get("代码", "")).zfill(6)
+        name = str(row.get("名称", ""))
+        trigger_time = str(row.get("触发时间", ""))
+        price = format_price_value(row.get("最新价", ""))
+        pct = format_percent_value(row.get("涨跌幅", ""))
+        industry = str(row.get("行业", "") or "-")
+        daily_group = str(row.get("日线分组", "") or "-")
+        structure_msg = str(row.get("30分钟结构", "") or "-")
+        buy_point = str(row.get("分钟B点", "") or "-")
+
+        lines.extend([
+            f"{idx}. {code} {name}",
+            f"   时间：{trigger_time}",
+            f"   价格：{price}  涨幅：{pct}  行业：{industry}",
+            f"   日线：{daily_group}",
+            f"   30分钟：{structure_msg}",
+            f"   B点：{buy_point}",
+            "",
+        ])
+
+    return "\n".join(lines).strip()
+
+
+def send_feishu_text_message(text: str) -> tuple[bool, str]:
+    """
+    发送飞书文本消息。
+
+    注意：
+    - webhook 直接从 config.py 的 FEISHU_WEBHOOK_URL 读取；
+    - session.trust_env=False 用来绕开系统代理，减少你之前遇到的 Proxy/SSL 报错。
+    """
+    webhook = str(FEISHU_WEBHOOK_URL or "").strip()
+    if not webhook:
+        return False, "config.py 未配置 FEISHU_WEBHOOK_URL"
+
+    if not text:
+        return False, "推送内容为空"
+
+    payload = {
+        "msg_type": "text",
+        "content": {
+            "text": text,
+        },
+    }
+
+    try:
+        session = requests.Session()
+        session.trust_env = False
+        resp = session.post(webhook, json=payload, timeout=8)
+        resp.raise_for_status()
+
+        try:
+            data = resp.json()
+        except Exception:
+            data = {}
+
+        code = data.get("code", 0)
+        if code not in (0, "0", None):
+            return False, f"飞书返回异常：{data}"
+
+        return True, "发送成功"
+
+    except Exception as e:
+        return False, str(e)
+
+
+def push_minute_buy_points_to_feishu(new_df: pd.DataFrame, chunk_size: int = 10) -> tuple[int, int]:
+    """
+    推送新增分钟级B点到飞书。
+
+    返回：
+    - success_count: 成功发送的消息条数
+    - failed_count: 失败发送的消息条数
+    """
+    if new_df is None or new_df.empty:
+        return 0, 0
+
+    if not is_feishu_push_enabled():
+        print("飞书分钟级B点推送已关闭。")
+        return 0, 0
+
+    success_count = 0
+    failed_count = 0
+
+    chunk_size = max(1, int(chunk_size or 10))
+    total = len(new_df)
+
+    for start in range(0, total, chunk_size):
+        part_df = new_df.iloc[start:start + chunk_size].copy()
+        message = build_feishu_minute_message(part_df)
+        ok, msg = send_feishu_text_message(message)
+
+        if ok:
+            success_count += 1
+        else:
+            failed_count += 1
+            print(f"飞书分钟级B点推送失败：{msg}")
+
+    if success_count > 0:
+        print(f"飞书分钟级B点推送成功：{success_count} 条消息。")
+
+    return success_count, failed_count
+
+
+
 # =========================
 # 保存分钟结果
 # =========================
 def save_minute_buy_points(df: pd.DataFrame):
+    """
+    保存分钟级B点结果，并把本轮新增B点推送到飞书。
+
+    返回：
+    - output_file: 保存文件路径
+    - new_count: 本轮新增B点数量
+
+    说明：
+    同一只股票 + 同一类分钟B点 + 同一触发时间，只保存一次。
+    这样在 --loop 循环扫描时，只有真正新增的B点才会触发飞书推送和声音提醒。
+    """
+
     if df is None or df.empty:
-        return ""
+        return "", 0
+
     os.makedirs(MINUTE_OUTPUT_DIR, exist_ok=True)
+
     today = datetime.now().strftime("%Y%m%d")
     output_file = os.path.join(MINUTE_OUTPUT_DIR, f"minute_buy_points_{today}.xlsx")
+
     save_df = df.copy()
     save_df["代码"] = save_df["代码"].astype(str).str.zfill(6)
     save_df["保存时间"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    save_df["分钟Key"] = save_df["代码"] + "|" + save_df["分钟B点"].fillna("").astype(str) + "|" + save_df["触发时间"].fillna("").astype(str)
+
+    save_df["分钟Key"] = (
+        save_df["代码"]
+        + "|"
+        + save_df["分钟B点"].fillna("").astype(str)
+        + "|"
+        + save_df["触发时间"].fillna("").astype(str)
+    )
+
+    new_df = save_df.copy()
+    new_count = len(new_df)
+
     if os.path.exists(output_file):
         try:
             old_df = pd.read_excel(output_file, dtype={"代码": str})
-            old_keys = set(old_df["分钟Key"].dropna().astype(str).tolist()) if "分钟Key" in old_df else set()
-            new_df = save_df[~save_df["分钟Key"].astype(str).isin(old_keys)].copy()
+
+            if old_df is not None and not old_df.empty:
+                old_df["代码"] = old_df["代码"].astype(str).str.zfill(6)
+
+            old_keys = (
+                set(old_df["分钟Key"].dropna().astype(str).tolist())
+                if old_df is not None and not old_df.empty and "分钟Key" in old_df.columns
+                else set()
+            )
+
+            new_df = save_df[
+                ~save_df["分钟Key"].astype(str).isin(old_keys)
+            ].copy()
+
+            new_count = len(new_df)
+
             if not new_df.empty:
                 save_df = pd.concat([old_df, new_df], ignore_index=True)
-        except Exception:
-            pass
+            else:
+                save_df = old_df
+
+        except Exception as e:
+            print(f"读取已有分钟B点文件失败，将按本轮结果重新保存：{e}")
+            new_df = save_df.copy()
+            new_count = len(new_df)
+
     save_df.to_excel(output_file, index=False)
-    return output_file
+
+    if new_count > 0 and new_df is not None and not new_df.empty:
+        push_minute_buy_points_to_feishu(new_df)
+
+    return output_file, int(new_count)
+
 
 
 
@@ -1259,8 +1509,14 @@ def scan_minute_buy_points(
         return pd.DataFrame()
 
     result_df = pd.DataFrame(result_list)
-    output_file = save_minute_buy_points(result_df)
+    output_file, new_count = save_minute_buy_points(result_df)
     print(f"分钟级B点结果已保存：{output_file}")
+
+    if new_count > 0:
+        print(f"发现新的分钟级B点：{new_count} 个，播放提示音。")
+        # play_buy_point_sound(times=3)
+    else:
+        print("本轮分钟级B点已存在，未播放提示音。")
 
     print("\n分钟级B点预览：")
     print_minute_buy_point_table(result_df, max_rows=30)

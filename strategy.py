@@ -224,7 +224,7 @@ def prepare_hist_data(df: pd.DataFrame) -> pd.DataFrame:
     df = df.copy()
 
     df["日期"] = pd.to_datetime(df["日期"])
-    df = df.sort_values("日期")
+    df = df.sort_values("日期").reset_index(drop=True)
 
     numeric_cols = ["开盘", "收盘", "最高", "最低", "成交量", "成交额", "涨跌幅"]
 
@@ -275,6 +275,96 @@ def prepare_hist_data(df: pd.DataFrame) -> pd.DataFrame:
 
     # 5天前的60日均线
     df["SMA60_5日前"] = df["SMA60"].shift(5)
+
+    # =========================
+    # 主升策略5：大阳启动后3-5个交易日缩量回踩不破5/10日线
+    # =========================
+    # 这个策略用于识别：第一次涨幅 >= 8% 的放量大阳启动后，
+    # 第3-5个交易日仍处于强势缩量回踩区间，且不有效跌破短均线的形态。
+    df["是否8点大阳启动"] = (
+        (df["涨跌幅"] >= 8.0)
+        & (df["成交量"] >= df["过去20日平均成交量"] * 1.5)
+        & (df["收盘"] > df["SMA5"])
+        & (df["收盘"] > df["SMA10"])
+    )
+
+    # 以下字段按“最近一次启动大阳线”逐行计算。
+    # 不把这些字段放进 get_required_strategy_columns，避免影响其他原有策略。
+    df["近5日是否有8点大阳启动"] = False
+    df["启动大阳距今天数"] = pd.NA
+    df["近5日启动大阳收盘"] = pd.NA
+    df["近5日启动大阳成交量"] = pd.NA
+    df["启动后回撤不深"] = False
+    df["回踩不破5日或10日线"] = False
+    df["近5日不破10日线"] = False
+    df["回调缩量"] = False
+    df["当前不破10日线"] = False
+
+    big_yang_positions = df.index[df["是否8点大阳启动"].fillna(False)].tolist()
+
+    for pos in range(len(df)):
+        # 只在当前K线之前找启动大阳，避免当天大阳线直接把自己也判成“回踩”。
+        # 短线版只看启动后的第3-5个交易日。
+        candidate_positions = [p for p in big_yang_positions if 3 <= pos - p <= 5]
+        if not candidate_positions:
+            continue
+
+        start_pos = candidate_positions[-1]
+        days_since_start = pos - start_pos
+
+        start_row = df.iloc[start_pos]
+        latest_row = df.iloc[pos]
+        pullback_df = df.iloc[start_pos + 1: pos + 1].copy()
+
+        if pullback_df.empty:
+            continue
+
+        start_close = start_row["收盘"]
+        start_volume = start_row["成交量"]
+
+        if pd.isna(start_close) or pd.isna(start_volume) or start_close <= 0 or start_volume <= 0:
+            continue
+
+        # 回踩不有效跌破10日线，允许2%误差；
+        # 同时保留“5日或10日线”的字段，后续你想调成更强条件也方便。
+        valid_ma10 = pullback_df["SMA10"].notna()
+        no_break_ma10 = bool(
+            valid_ma10.any()
+            and (pullback_df.loc[valid_ma10, "最低"] >= pullback_df.loc[valid_ma10, "SMA10"] * 0.98).all()
+        )
+
+        valid_ma5_or_ma10 = pullback_df["SMA5"].notna() & pullback_df["SMA10"].notna()
+        no_break_ma5_or_ma10 = bool(
+            valid_ma5_or_ma10.any()
+            and (
+                (pullback_df.loc[valid_ma5_or_ma10, "最低"] >= pullback_df.loc[valid_ma5_or_ma10, "SMA5"] * 0.98)
+                | (pullback_df.loc[valid_ma5_or_ma10, "最低"] >= pullback_df.loc[valid_ma5_or_ma10, "SMA10"] * 0.98)
+            ).all()
+        )
+
+        # 回调阶段缩量：启动后到当前的平均量，不超过启动大阳量的70%。
+        pullback_avg_volume = pd.to_numeric(pullback_df["成交量"], errors="coerce").mean()
+        volume_shrink = bool(pd.notna(pullback_avg_volume) and pullback_avg_volume <= start_volume * 0.70)
+
+        # 启动后不能回撤太深，防止大阳后直接走坏。
+        drawdown_ok = bool(pd.notna(latest_row["收盘"]) and latest_row["收盘"] >= start_close * 0.88)
+
+        # 当前仍在10日线附近上方，允许2%误差。
+        current_no_break_ma10 = bool(
+            pd.notna(latest_row["SMA10"])
+            and pd.notna(latest_row["收盘"])
+            and latest_row["收盘"] >= latest_row["SMA10"] * 0.98
+        )
+
+        df.iat[pos, df.columns.get_loc("近5日是否有8点大阳启动")] = True
+        df.iat[pos, df.columns.get_loc("启动大阳距今天数")] = days_since_start
+        df.iat[pos, df.columns.get_loc("近5日启动大阳收盘")] = start_close
+        df.iat[pos, df.columns.get_loc("近5日启动大阳成交量")] = start_volume
+        df.iat[pos, df.columns.get_loc("启动后回撤不深")] = drawdown_ok
+        df.iat[pos, df.columns.get_loc("回踩不破5日或10日线")] = no_break_ma5_or_ma10
+        df.iat[pos, df.columns.get_loc("近5日不破10日线")] = no_break_ma10
+        df.iat[pos, df.columns.get_loc("回调缩量")] = volume_shrink
+        df.iat[pos, df.columns.get_loc("当前不破10日线")] = current_no_break_ma10
 
     return df
 
@@ -422,6 +512,13 @@ def build_signal_info(latest: pd.Series, breakthrough_strategies: list[str], mai
         "SMA10": latest["SMA10"],
         "SMA20": latest["SMA20"],
         "SMA60": latest["SMA60"],
+
+        # 主升-大阳缩量回踩辅助字段，方便导出后复盘。
+        "启动大阳距今天数": latest.get("启动大阳距今天数", pd.NA),
+        "启动大阳收盘": latest.get("近5日启动大阳收盘", pd.NA),
+        "启动大阳成交量": latest.get("近5日启动大阳成交量", pd.NA),
+        "回踩不破5日或10日线": latest.get("回踩不破5日或10日线", pd.NA),
+        "回调缩量": latest.get("回调缩量", pd.NA),
     }
 
 

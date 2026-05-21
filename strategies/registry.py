@@ -4,10 +4,11 @@ from .base_strategy import BaseDailyStrategy, BaseMinuteStrategy, StrategySignal
 from .daily_strategies import (
     BottomVolumeReversalStrategy,
     BoxBreakoutStrategy,
-    MainBottomVolumeReversalStrategy,
-    MainBoxBreakoutStrategy,
+    # MainBottomVolumeReversalStrategy,
+    # MainBoxBreakoutStrategy,
     MainBullishMAAlignmentStrategy,
     MainPullbackStartStrategy,
+    MainBigYangPullbackNoBreakStrategy,
     VShapeReversalStrategy,
 )
 
@@ -23,10 +24,11 @@ def get_daily_strategies() -> list[BaseDailyStrategy]:
     return [
         BoxBreakoutStrategy(),
         BottomVolumeReversalStrategy(),
-        MainBoxBreakoutStrategy(),
-        MainBottomVolumeReversalStrategy(),
+        # MainBoxBreakoutStrategy(),
+        # MainBottomVolumeReversalStrategy(),
         MainPullbackStartStrategy(),
         MainBullishMAAlignmentStrategy(),
+        MainBigYangPullbackNoBreakStrategy(),
         VShapeReversalStrategy(),
     ]
 
@@ -50,7 +52,7 @@ from .minute_strategies import (
     check_30m_structure,
 )
 from .chanlun_strategies import (
-    ChanlunFirstBuyMinuteStrategy,
+    # ChanlunFirstBuyMinuteStrategy,
     ChanlunSecondBuyMinuteStrategy,
     ChanlunThirdBuyMinuteStrategy,
 )
@@ -73,7 +75,7 @@ def get_minute_strategies() -> list[BaseMinuteStrategy]:
         VolumeReversalMinuteStrategy(),
 
         # 5分钟缠论类B点
-        ChanlunFirstBuyMinuteStrategy(),
+        # ChanlunFirstBuyMinuteStrategy(),
         ChanlunSecondBuyMinuteStrategy(),
         ChanlunThirdBuyMinuteStrategy(),
 
