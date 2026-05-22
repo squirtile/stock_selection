@@ -3,7 +3,16 @@
     "allow": [
       "Bash(python -c \"import tushare as ts; help\\(ts.get_realtime_quotes\\)\")",
       "Bash(python -c \"import tushare as ts; print\\('tushare version:', ts.__version__\\); funcs = [x for x in dir\\(ts\\) if 'real' in x.lower\\(\\) or 'money' in x.lower\\(\\) or 'fund' in x.lower\\(\\) or 'flow' in x.lower\\(\\) or 'tick' in x.lower\\(\\) or 'min' in x.lower\\(\\)]; print\\('\\\\nrelevant functions in tushare main:'\\); [print\\(f'  {f}'\\) for f in funcs]\")",
-      "WebSearch"
+      "WebSearch",
+      "Bash(PYTHONIOENCODING=utf-8 python -c ' *)",
+      "Bash(PYTHONIOENCODING=utf-8 python cli/ml_similarity.py --template 600519 --threshold 0.60 --top-k 20)",
+      "Bash(PYTHONIOENCODING=utf-8 python cli/ml_similarity.py --template 000009,000027 --threshold 0.60 --top-k 20)",
+      "Bash(PYTHONIOENCODING=utf-8 python cli/ml_similarity.py --template 000009 --threshold 0.50 --top-k 15)",
+      "Bash(python -c \"from ml_engine.runner import match_single_stock_pattern; from ml_engine.eval import compute_similarity_backtest; print\\('Imports OK'\\)\")",
+      "Bash(python -c ' *)",
+      "Bash(rm -f \"D:\\\\Vscode\\\\股票\\\\stock_selection\\\\output\\\\ml_models\\\\global_scaler.pkl\")",
+      "Bash(git checkout *)",
+      "Bash(rm -f \"D:/Vscode/股票/stock_selection/output/ml_models/global_scaler.pkl\")"
     ]
   }
 }
