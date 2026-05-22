@@ -8,6 +8,8 @@ import time
 
 import numpy as np
 import pandas as pd
+from openpyxl.styles import Alignment, Font, PatternFill, Border, Side
+from openpyxl.utils import get_column_letter
 
 CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
 PROJECT_ROOT = os.path.dirname(CURRENT_DIR)
@@ -17,6 +19,116 @@ if PROJECT_ROOT not in sys.path:
 from ml_engine.pattern_extract import extract_indicator_matrix, ML_INDICATOR_COLUMNS, DEFAULT_LOOKBACK
 from ml_engine.ml_classifier import MLPatternModel
 from ml_engine.similarity import _compute_cosine_similarity_batched
+
+
+
+# Excel 报告说明区：写在每个 sheet 最上方，方便打开表格后一眼看懂结果。
+def _write_df_with_top_notes(
+    writer,
+    df: pd.DataFrame,
+    sheet_name: str,
+    notes: list[str] | None = None,
+    index: bool = False,
+):
+    """Write a DataFrame to Excel with explanatory notes above the table."""
+    notes = notes or []
+    startrow = len(notes) + 2 if notes else 0
+    df.to_excel(writer, sheet_name=sheet_name, index=index, startrow=startrow)
+
+    ws = writer.book[sheet_name]
+    max_col = max(1, df.shape[1])
+
+    # 顶部说明区
+    if notes:
+        for i, text in enumerate(notes, start=1):
+            ws.cell(row=i, column=1, value=text)
+            ws.cell(row=i, column=1).font = Font(bold=True if i == 1 else False, color="1F2937")
+            ws.cell(row=i, column=1).alignment = Alignment(wrap_text=True, vertical="top")
+            if max_col > 1:
+                ws.merge_cells(start_row=i, start_column=1, end_row=i, end_column=max_col)
+        blank_row = len(notes) + 1
+        ws.cell(row=blank_row, column=1, value="")
+
+    # 表头样式
+    header_row = startrow + 1
+    header_fill = PatternFill("solid", fgColor="D9EAF7")
+    thin = Side(style="thin", color="D0D7DE")
+    border = Border(left=thin, right=thin, top=thin, bottom=thin)
+    for cell in ws[header_row]:
+        cell.font = Font(bold=True, color="111827")
+        cell.fill = header_fill
+        cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+        cell.border = border
+
+    # 内容样式与列宽
+    for row in ws.iter_rows(min_row=header_row + 1, max_row=ws.max_row):
+        for cell in row:
+            cell.border = border
+            cell.alignment = Alignment(vertical="center", wrap_text=False)
+
+    for col_idx in range(1, max_col + 1):
+        col_letter = get_column_letter(col_idx)
+        max_len = 0
+        for row_idx in range(header_row, ws.max_row + 1):
+            cell = ws.cell(row=row_idx, column=col_idx)
+            val = "" if cell.value is None else str(cell.value)
+            max_len = max(max_len, len(val))
+        # 说明区合并单元格会产生 MergedCell，不能用 ws.columns 的首格取 column_letter。
+        # 这里只统计表头和表格内容，避免顶部长说明把列宽撑爆。
+        width = min(max(max_len + 2, 10), 28)
+        if col_letter == "A":
+            width = min(max(width, 12), 20)
+        ws.column_dimensions[col_letter].width = width
+
+    ws.freeze_panes = ws.cell(row=header_row + 1, column=1).coordinate
+    ws.auto_filter.ref = ws.dimensions
+
+
+def _similarity_rank_notes() -> list[str]:
+    return [
+        "【相似度排名说明】本表用于查看候选股票当前最近形态，与模板股票指定强势区间或自动模板之间的相似程度。",
+        "平均相似度%：只统计超过阈值的有效匹配结果，再取平均值。它表示这只股票整体有效匹配质量。",
+        "最大相似度%：候选股票窗口与所有模板窗口比较时，最高的一次相似度。它表示最像模板的那一次。",
+        "匹配次数：相似度达到阈值的次数。次数越多，说明不是偶然只像某一个模板窗口，而是和多个模板阶段都接近。",
+        "看表建议：优先关注“最大相似度高 + 匹配次数多”的股票；平均相似度很高但匹配次数只有 1 的股票，需要人工看图确认。",
+    ]
+
+
+def _similarity_detail_notes() -> list[str]:
+    return [
+        "【明细匹配说明】本表展示每一次候选窗口与模板窗口的具体匹配记录。",
+        "候选窗口通常是候选股票当前最近 20 日走势；模板窗口来自手动指定日期区间，或自动识别的启动前/启动期窗口。",
+        "可通过模板编号、模板开始/结束日期、候选开始/结束日期，判断股票到底像模板的哪一段。",
+    ]
+
+
+def _template_notes() -> list[str]:
+    return [
+        "【模板摘要说明】本表记录本次用于匹配的模板窗口来源。",
+        "manual/date_range 表示手动指定日期区间；auto_prelaunch 表示自动识别启动点前窗口；recent/recent_fast 表示最近窗口。",
+    ]
+
+
+def _backtest_summary_notes() -> list[str]:
+    return [
+        "【回测汇总说明】本表统计相似度信号出现后，按不同持有天数计算的整体表现。",
+        "回测逻辑：信号日 T 出现相似形态，T+1 开盘买入，持有 N 天后收盘卖出。",
+        "重点看：信号次数、胜率%、平均收益率%、最大单笔亏损%、盈亏比。该结果只用于验证形态有效性，不代表实盘收益。",
+    ]
+
+
+def _backtest_detail_notes() -> list[str]:
+    return [
+        "【回测明细说明】本表列出每一笔历史相似度信号对应的买入、卖出和收益情况。",
+        "可用于检查某个股票、某个日期的信号是否真实有效，也可以人工复盘失败案例。",
+    ]
+
+
+def _model_stats_notes() -> list[str]:
+    return [
+        "【模型统计说明】本表记录机器学习模型训练或验证过程中产生的统计指标。",
+        "如果本次只是做相似度匹配，没有训练模型，则本表可能为空或不会生成。",
+    ]
 
 
 def _can_buy_next_day(df: pd.DataFrame, buy_idx: int, skip_limit_up: bool = True) -> bool:
@@ -273,15 +385,45 @@ def generate_similarity_report(
     os.makedirs(os.path.dirname(output_file), exist_ok=True)
     with pd.ExcelWriter(output_file, engine="openpyxl") as writer:
         if similarity_stock is not None and not similarity_stock.empty:
-            similarity_stock.to_excel(writer, sheet_name="相似度排名", index=False)
+            _write_df_with_top_notes(
+                writer,
+                similarity_stock,
+                sheet_name="相似度排名",
+                notes=_similarity_rank_notes(),
+                index=False,
+            )
         if similarity_detail is not None and not similarity_detail.empty:
-            similarity_detail.to_excel(writer, sheet_name="明细匹配", index=False)
+            _write_df_with_top_notes(
+                writer,
+                similarity_detail,
+                sheet_name="明细匹配",
+                notes=_similarity_detail_notes(),
+                index=False,
+            )
         if template_info:
-            pd.DataFrame(template_info).to_excel(writer, sheet_name="模板摘要", index=False)
+            _write_df_with_top_notes(
+                writer,
+                pd.DataFrame(template_info),
+                sheet_name="模板摘要",
+                notes=_template_notes(),
+                index=False,
+            )
         if backtest_summary is not None and not backtest_summary.empty:
-            backtest_summary.to_excel(writer, sheet_name="回测汇总", index=False)
+            _write_df_with_top_notes(
+                writer,
+                backtest_summary,
+                sheet_name="回测汇总",
+                notes=_backtest_summary_notes(),
+                index=False,
+            )
         if backtest_trades is not None and not backtest_trades.empty:
-            backtest_trades.to_excel(writer, sheet_name="回测明细", index=False)
+            _write_df_with_top_notes(
+                writer,
+                backtest_trades,
+                sheet_name="回测明细",
+                notes=_backtest_detail_notes(),
+                index=False,
+            )
         if model_stats:
             rows = []
             for k, v in model_stats.items():
@@ -290,5 +432,11 @@ def generate_similarity_report(
                         rows.append({"指标": f"{k}/{kk}", "值": vv})
                 else:
                     rows.append({"指标": k, "值": v})
-            pd.DataFrame(rows).to_excel(writer, sheet_name="模型统计", index=False)
+            _write_df_with_top_notes(
+                writer,
+                pd.DataFrame(rows),
+                sheet_name="模型统计",
+                notes=_model_stats_notes(),
+                index=False,
+            )
     return output_file
