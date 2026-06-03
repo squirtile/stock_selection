@@ -64,17 +64,22 @@ def train_model(
     use_pca: bool = False,
     validation_split: float = 0.2,
     model_dir: str = DEFAULT_MODEL_DIR,
+    only_template: bool = False,
 ) -> tuple[MLPatternModel, dict]:
     print(f"训练 ML 模型: {len(template_codes)} 只模板股票")
+    template_codes = [normalize_code(c) for c in template_codes]
     t0 = time.time()
     X, y, _ = build_window_dataset(template_codes, lookback, forward_horizon, target_pct)
     if len(X) < 50:
-        print("  [提示] 模板股票样本偏少，从全市场补充训练样本...")
-        others = [c for c in list_cached_codes() if c not in set(template_codes)][:500]
-        X2, y2, _ = build_window_dataset(others, lookback, forward_horizon, target_pct)
-        if len(X2):
-            X = np.vstack([X, X2]) if len(X) else X2
-            y = np.concatenate([y, y2]) if len(y) else y2
+        if only_template:
+            print("  [提示] 已启用 --only-template，仅使用模板股票自身样本训练，不从全市场补充训练样本。")
+        else:
+            print("  [提示] 模板股票样本偏少，从全市场补充训练样本...")
+            others = [c for c in list_cached_codes() if c not in set(template_codes)][:500]
+            X2, y2, _ = build_window_dataset(others, lookback, forward_horizon, target_pct)
+            if len(X2):
+                X = np.vstack([X, X2]) if len(X) else X2
+                y = np.concatenate([y, y2]) if len(y) else y2
     if len(X) < 50:
         raise RuntimeError(f"训练样本不足：{len(X)}，请增加模板股票或检查 cache/hist 数据")
 
@@ -85,6 +90,10 @@ def train_model(
         n_components=min(50, max(2, X.shape[1] // 2)),
     )
     stats = model.fit(X, y, validation_split=validation_split)
+    model.template_codes = template_codes
+    model.forward_horizon = forward_horizon
+    model.target_pct = target_pct
+    model.train_time = pd.Timestamp.now().strftime("%Y-%m-%d %H:%M:%S")
     stats.update({
         "template_codes": template_codes,
         "lookback": lookback,
@@ -93,7 +102,16 @@ def train_model(
         "train_time_seconds": round(time.time() - t0, 1),
     })
     os.makedirs(model_dir, exist_ok=True)
-    model_path = os.path.join(model_dir, "ml_pattern_model.pkl")
+    safe_codes = "_".join(template_codes[:3])
+    if len(template_codes) > 3:
+        safe_codes += f"_plus{len(template_codes) - 3}"
+
+    target_str = str(target_pct).replace(".", "p")
+    ts = pd.Timestamp.now().strftime("%Y%m%d_%H%M%S")
+
+    model_name = f"ml_pattern_{safe_codes}_lb{lookback}_h{forward_horizon}_t{target_str}_{ts}.pkl"
+    model_path = os.path.join(model_dir, model_name)
+
     model.save(model_path)
     stats["model_path"] = model_path
     print(f"  模型已保存: {model_path}")

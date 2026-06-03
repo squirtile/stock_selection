@@ -2,13 +2,19 @@ from __future__ import annotations
 
 from .base_strategy import BaseDailyStrategy, BaseMinuteStrategy, StrategySignal, MinuteStrategySignal
 from .daily_strategies import (
-    BottomVolumeReversalStrategy,
-    BoxBreakoutStrategy,
+    # BottomVolumeReversalStrategy,
+    # BoxBreakoutStrategy,
     # MainBottomVolumeReversalStrategy,
     # MainBoxBreakoutStrategy,
-    MainBullishMAAlignmentStrategy,
-    MainPullbackStartStrategy,
+    # MainBullishMAAlignmentStrategy,
+    # MainPullbackStartStrategy,
     MainBigYangPullbackNoBreakStrategy,
+
+    # MainChipCleanPlatformTrendStrategy,
+    # MainHotStockBollMiddleReboundStrategy,
+    # MainLimitBreakReversalStrategy,
+    # MainBullishDivergencePlatformBreakStrategy,
+    
     VShapeReversalStrategy,
 )
 
@@ -22,13 +28,20 @@ def get_daily_strategies() -> list[BaseDailyStrategy]:
     """
 
     return [
-        BoxBreakoutStrategy(),
-        BottomVolumeReversalStrategy(),
+        # BoxBreakoutStrategy(),
+        # BottomVolumeReversalStrategy(),
         # MainBoxBreakoutStrategy(),
         # MainBottomVolumeReversalStrategy(),
-        MainPullbackStartStrategy(),
-        MainBullishMAAlignmentStrategy(),
+        # MainPullbackStartStrategy(),
+        # MainBullishMAAlignmentStrategy(),
         MainBigYangPullbackNoBreakStrategy(),
+
+        # 新增：用户规则 1、3、4、5
+        # MainChipCleanPlatformTrendStrategy(),
+        # MainHotStockBollMiddleReboundStrategy(),
+        # MainLimitBreakReversalStrategy(),
+        # MainBullishDivergencePlatformBreakStrategy(),
+
         VShapeReversalStrategy(),
     ]
 

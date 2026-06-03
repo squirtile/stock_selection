@@ -248,6 +248,13 @@ class MLPatternModel:
                 "lookback": self.lookback,
                 "use_pca": self.use_pca,
                 "n_components": self.n_components,
+
+                # 新增：保存训练模板信息
+                "template_codes": getattr(self, "template_codes", []),
+                "forward_horizon": getattr(self, "forward_horizon", None),
+                "target_pct": getattr(self, "target_pct", None),
+                "train_time": getattr(self, "train_time", None),
+
                 "params": {
                     "n_estimators": self.n_estimators,
                     "max_depth": self.max_depth,
@@ -280,6 +287,10 @@ class MLPatternModel:
         instance.model = data["model"]
         instance.scaler = data["scaler"]
         instance.pca = data["pca"]
+        instance.template_codes = data.get("template_codes", [])
+        instance.forward_horizon = data.get("forward_horizon", None)
+        instance.target_pct = data.get("target_pct", None)
+        instance.train_time = data.get("train_time", None)
         instance._fitted = True
         return instance
 

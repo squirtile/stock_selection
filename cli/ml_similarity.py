@@ -118,12 +118,10 @@ def main() -> None:
     )
 
     if stock_df is None or stock_df.empty:
-        print(f"
-无匹配结果，建议降低阈值，例如 --threshold 0.45")
+        print(f"无匹配结果，建议降低阈值，例如 --threshold 0.45")
         return
 
-    print("
-" + "=" * 80)
+    print("" + "=" * 80)
     print(f"Top {len(stock_df)} 相似股票")
     print("=" * 80)
     for _, row in stock_df.iterrows():

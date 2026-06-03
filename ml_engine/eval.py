@@ -156,14 +156,34 @@ def compute_ml_backtest(
     fee_bps: float = 0.0,
     slippage_bps: float = 0.0,
     skip_limit_up_next_open: bool = True,
+    show_progress: bool = True,
+    progress_every: int = 5,
 ) -> pd.DataFrame:
     if hold_days_list is None:
         hold_days_list = [1, 3, 5, 10]
+
     trades = []
-    for code in codes:
+    total = len(codes)
+    start_ts = time.time()
+    valid_stocks = 0
+    signal_stocks = 0
+
+    for i, code in enumerate(codes, start=1):
         df = extract_indicator_matrix(code, min_rows=min_stock_rows)
+
         if df.empty:
+            if show_progress and (i == 1 or i % progress_every == 0 or i == total):
+                elapsed = max(time.time() - start_ts, 0.001)
+                speed = i / elapsed
+                remain = (total - i) / speed if speed > 0 else 0
+                print(
+                    f"\r  ML回测进度: {i}/{total} | 当前: {code} | 有效: {valid_stocks} | "
+                    f"有信号: {signal_stocks} | 交易: {len(trades)} | 预计剩余: {remain/60:.1f} 分钟",
+                    end="",
+                    flush=True,
+                )
             continue
+
         indicator_arr = df[model.feature_cols].values
         closes = df["收盘"].values
         opens = df["开盘"].values
@@ -173,28 +193,57 @@ def compute_ml_backtest(
         amounts = df["成交额"].values
         pct_changes = df["涨跌幅"].values
         n = len(df)
+
+        if n < model.lookback + max(hold_days_list):
+            continue
+
+        valid_stocks += 1
+
+        # 关键优化：先收集这只股票所有有效窗口，然后一次性批量预测
+        window_records = []
+        window_vectors = []
+
         for t in range(model.lookback - 1, n - 1):
             window = indicator_arr[t - model.lookback + 1:t + 1, :]
             if not np.all(np.isfinite(window)):
                 continue
-            try:
-                score = float(model.predict_proba(window.flatten().astype(np.float64)))
-            except Exception:
-                continue
+            window_records.append(t)
+            window_vectors.append(window.flatten().astype(np.float64))
+
+        if not window_vectors:
+            continue
+
+        try:
+            X = np.array(window_vectors, dtype=np.float64)
+            scores = model.predict_proba(X)
+        except Exception:
+            continue
+
+        stock_trade_start = len(trades)
+
+        for idx, t in enumerate(window_records):
+            score = float(scores[idx])
             if score < threshold:
                 continue
+
             for hold_days in hold_days_list:
                 buy_idx = t + 1
                 sell_idx = t + hold_days
+
                 if buy_idx >= n or sell_idx >= n:
                     continue
+
                 if not _can_buy_next_day(df, buy_idx, skip_limit_up_next_open):
                     continue
+
                 buy_price, sell_price = opens[buy_idx], closes[sell_idx]
+
                 if pd.isna(buy_price) or pd.isna(sell_price) or buy_price <= 0 or sell_price <= 0:
                     continue
+
                 return_pct = _calc_return(float(buy_price), float(sell_price), fee_bps, slippage_bps)
                 vol_ratio = volumes[t] / vol_avg_20[t] if pd.notna(vol_avg_20[t]) and vol_avg_20[t] > 0 else None
+
                 trades.append({
                     "代码": code,
                     "信号日期": str(dates[t])[:10],
@@ -211,8 +260,25 @@ def compute_ml_backtest(
                     "信号日量比": round(float(vol_ratio), 2) if vol_ratio is not None else None,
                     "信号日成交额": float(amounts[t]) if pd.notna(amounts[t]) else None,
                 })
-    return pd.DataFrame(trades)
 
+        if len(trades) > stock_trade_start:
+            signal_stocks += 1
+
+        if show_progress and (i == 1 or i % progress_every == 0 or i == total):
+            elapsed = max(time.time() - start_ts, 0.001)
+            speed = i / elapsed
+            remain = (total - i) / speed if speed > 0 else 0
+            print(
+                f"\r  ML回测进度: {i}/{total} | 当前: {code} | 有效: {valid_stocks} | "
+                f"有信号: {signal_stocks} | 交易: {len(trades)} | 预计剩余: {remain/60:.1f} 分钟",
+                end="",
+                flush=True,
+            )
+
+    if show_progress:
+        print()
+
+    return pd.DataFrame(trades)
 
 def _prepare_similarity_scaler(template_vectors: list[np.ndarray], stock_vectors: list[np.ndarray]):
     from sklearn.preprocessing import StandardScaler

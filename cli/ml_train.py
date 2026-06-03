@@ -10,7 +10,8 @@ PROJECT_ROOT = os.path.dirname(CURRENT_DIR)
 if PROJECT_ROOT not in sys.path:
     sys.path.insert(0, PROJECT_ROOT)
 
-from cli.ml_similarity import auto_select_templates
+# from cli.ml_similarity import auto_select_templates
+from cli.ml_similarity import _auto_select_templates as auto_select_templates
 from ml_engine.runner import train_model, run_ml_pipeline
 
 
@@ -31,6 +32,7 @@ def main():
     parser.add_argument("--threshold", type=float, default=0.60)
     parser.add_argument("--top-k", type=int, default=50)
     parser.add_argument("--hold-days", default="1,3,5,10")
+    parser.add_argument("--only-template", action="store_true", help="只使用模板股票自身样本训练，不从全市场补充训练样本")
     args = parser.parse_args()
 
     if args.auto_template:
@@ -53,7 +55,7 @@ def main():
             use_pca=args.use_pca,
         )
     else:
-        train_model(template_codes, lookback=args.lookback, forward_horizon=args.horizon, target_pct=args.target, use_pca=args.use_pca)
+        train_model(template_codes, lookback=args.lookback, forward_horizon=args.horizon, target_pct=args.target, use_pca=args.use_pca, only_template=args.only_template)
 
 
 if __name__ == "__main__":
