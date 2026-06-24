@@ -649,6 +649,8 @@ STRATEGY_DISPLAY_ORDER = [
     "主升-均线多头排列",
     "主升-大阳缩量回踩",
     "大阳缩量回踩",
+    "长庄-建仓洗盘突破",
+    "主升-大阳回调不破10日线",
 ]
 
 
@@ -867,7 +869,7 @@ def print_signal_group(title: str, total_df: pd.DataFrame, max_rows: int = 50):
 # 主程序
 # =========================
 
-def run_daily():
+def run_daily(args=None):
     disable_proxy()
 
     selected_df = load_or_create_base_pool()
@@ -882,7 +884,11 @@ def run_daily():
 
     print("\n开始执行第二步：信号策略扫描...")
 
-    signal_df = scan_main_rising_stocks(selected_df)
+    signal_df = scan_main_rising_stocks(
+        selected_df,
+        cache_only=bool(getattr(args, "daily_cache_only", False)),
+        force_update=bool(getattr(args, "force_update_daily", False)),
+    )
 
     if signal_df is None or signal_df.empty:
         print("今日没有股票命中信号。")
@@ -1104,6 +1110,18 @@ def parse_args():
         help="测试用：分钟级确认只处理前N只日线命中股票。默认0表示全部。",
     )
 
+    parser.add_argument(
+        "--daily-cache-only",
+        action="store_true",
+        help="daily 模式下只使用本地 cache/hist 日K缓存分析，不请求 BaoStock。适合第二天盘前用昨日数据扫描。",
+    )
+
+    parser.add_argument(
+        "--force-update-daily",
+        action="store_true",
+        help="daily 模式下强制请求 BaoStock 更新日K缓存，忽略17:30自动更新限制。",
+    )
+
     return parser.parse_args()
 
 
@@ -1113,7 +1131,7 @@ def main():
     if args.mode == "realtime":
         run_realtime(args)
     else:
-        run_daily()
+        run_daily(args)
 
 
 if __name__ == "__main__":

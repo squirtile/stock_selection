@@ -14,6 +14,8 @@ from .daily_strategies import (
     # MainHotStockBollMiddleReboundStrategy,
     # MainLimitBreakReversalStrategy,
     # MainBullishDivergencePlatformBreakStrategy,
+
+    # LongBuildWashBreakoutStrategy,
     
     VShapeReversalStrategy,
 )
@@ -41,6 +43,8 @@ def get_daily_strategies() -> list[BaseDailyStrategy]:
         # MainHotStockBollMiddleReboundStrategy(),
         # MainLimitBreakReversalStrategy(),
         # MainBullishDivergencePlatformBreakStrategy(),
+
+        # LongBuildWashBreakoutStrategy(),
 
         VShapeReversalStrategy(),
     ]

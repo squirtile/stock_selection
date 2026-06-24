@@ -48,7 +48,7 @@ class MLPatternModel:
 
     def __init__(
         self,
-        n_estimators: int = 200,
+        n_estimators: int = 400,
         max_depth: int = 12,
         use_pca: bool = False,
         n_components: int = 50,

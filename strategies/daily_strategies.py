@@ -450,3 +450,419 @@ class MainBullishDivergencePlatformBreakStrategy(BaseDailyStrategy):
         td_ok = pd.isna(td_seq) or td_seq < 9
 
         return bool(bullish_ma and break_platform and just_break and volume_ok and turnover_ok and td_ok)
+
+
+class LongBuildWashBreakoutStrategy(BaseDailyStrategy):
+    """
+    长庄建仓洗盘后阶梯突破策略
+
+    目标形态：
+    1. 类似金安国纪：长期建仓、洗盘、阶梯式突破；
+    2. 排除火炬电子这类短期垂直加速、高位巨震、涨幅过大的票；
+    3. 要求趋势慢慢抬高，而不是几天连续暴力拉升。
+    """
+
+    name = "长庄-建仓洗盘阶梯突破"
+    category = "主升"
+
+    def match(self, row: pd.Series) -> bool:
+        need_cols = [
+            "收盘",
+            "涨跌幅",
+            "建仓区间最高价",
+            "建仓平台振幅",
+            "洗盘区间最高价",
+            "洗盘区间振幅",
+            "近15日涨停次数",
+            "近15日5点大阳次数",
+            "近5日是否突破建仓平台",
+            "近5日平均成交量",
+            "建仓后基准成交量",
+
+            # 新增过滤字段
+            "近10日涨幅",
+            "近20日涨幅",
+            "近60日涨幅",
+            "近10日5点大阳次数",
+            "近20日5点大阳次数",
+            "距离20日线乖离",
+            "距离60日线乖离",
+            "SMA20近10日涨幅",
+            "SMA60近20日涨幅",
+            "近20日高位巨震次数",
+            "近20日最大区间涨幅",
+            "近60日最大区间涨幅",
+            "是否阶梯趋势",
+        ]
+
+        for col in need_cols:
+            if col not in row.index or pd.isna(row[col]):
+                return False
+
+        close = float(row["收盘"])
+        pct = float(row["涨跌幅"])
+
+        build_high = float(row["建仓区间最高价"])
+        build_range_pct = float(row["建仓平台振幅"])
+
+        wash_high = float(row["洗盘区间最高价"])
+        wash_range_pct = float(row["洗盘区间振幅"])
+
+        limit_up_count = float(row["近15日涨停次数"])
+        big_yang_count_15 = float(row["近15日5点大阳次数"])
+
+        recent_vol = float(row["近5日平均成交量"])
+        base_vol = float(row["建仓后基准成交量"])
+
+        ret10 = float(row["近10日涨幅"])
+        ret20 = float(row["近20日涨幅"])
+        ret60 = float(row["近60日涨幅"])
+
+        big_yang_10 = float(row["近10日5点大阳次数"])
+        big_yang_20 = float(row["近20日5点大阳次数"])
+
+        dist_ma20 = float(row["距离20日线乖离"])
+        dist_ma60 = float(row["距离60日线乖离"])
+
+        ma20_slope = float(row["SMA20近10日涨幅"])
+        ma60_slope = float(row["SMA60近20日涨幅"])
+
+        shock_count = float(row["近20日高位巨震次数"])
+        range20 = float(row["近20日最大区间涨幅"])
+        range60 = float(row["近60日最大区间涨幅"])
+
+        if close <= 0 or build_high <= 0 or wash_high <= 0:
+            return False
+
+        # 1. 建仓平台不能太乱
+        # 金安国纪这种长期平台可以有波动，但不能是暴涨暴跌型。
+        is_build_platform = build_range_pct <= 0.55
+
+        # 2. 洗盘区间允许略宽，但不能已经提前走妖
+        is_long_wash = wash_range_pct <= 0.90
+
+        # 3. 近期必须突破建仓平台
+        recent_breakout = bool(row["近5日是否突破建仓平台"])
+
+        # 4. 当前不能离建仓平台太远
+        # 原来 1.18 太宽，容易收进火炬电子这种已经高潮的票。
+        not_overextended_from_build = close <= build_high * 1.12
+
+        # 5. 当前不能离整个洗盘区间高点太远
+        not_too_high_from_wash = close <= wash_high * 1.18
+
+        # 6. 近期有人气，但不能过热
+        # 目标是“有2-3个涨停/大阳吸引人气”，不是10天内天天暴拉。
+        has_popularity = (
+            1 <= limit_up_count <= 3
+            or 2 <= big_yang_count_15 <= 4
+        )
+
+        not_too_hot = (
+            big_yang_10 <= 3
+            and big_yang_20 <= 6
+        )
+
+        # 7. 排除短期垂直加速
+        # 火炬电子这种会被这里过滤。
+        not_vertical_acceleration = (
+            ret10 <= 0.45
+            and ret20 <= 0.75
+            and range20 <= 0.90
+        )
+
+        # 8. 允许中期强势，但不能60日已经翻太多
+        # 金安国纪这类趋势可以强，但不是短期刚竖起来。
+        medium_trend_not_crazy = (
+            ret60 <= 1.60
+            and range60 <= 2.00
+        )
+
+        # 9. 必须是阶梯式趋势
+        stair_trend = bool(row["是否阶梯趋势"])
+
+        # 10. 均线要慢慢抬高
+        ma_slow_up = (
+            ma20_slope > 0
+            and ma60_slope > 0
+            and ma20_slope <= 0.35
+        )
+
+        # 11. 当前不能距离均线过远
+        not_far_from_ma = (
+            dist_ma20 <= 0.25
+            and dist_ma60 <= 0.70
+        )
+
+        # 12. 过滤高位巨震
+        no_high_shock = shock_count <= 2
+
+        # 13. 量能确认：近期量能比平台期放大
+        volume_ok = True
+        if base_vol > 0:
+            volume_ok = recent_vol >= base_vol * 1.15
+
+        # 14. 当天不能接近涨停追高
+        not_limit_chasing = pct < 8.5
+
+        return bool(
+            is_build_platform
+            and is_long_wash
+            and recent_breakout
+            and not_overextended_from_build
+            and not_too_high_from_wash
+            and has_popularity
+            and not_too_hot
+            and not_vertical_acceleration
+            and medium_trend_not_crazy
+            and stair_trend
+            and ma_slow_up
+            and not_far_from_ma
+            and no_high_shock
+            and volume_ok
+            and not_limit_chasing
+        )
+    """
+    长庄建仓洗盘后突破策略
+
+    逻辑：
+    1. 过去 3-6 个月存在明显建仓平台；
+    2. 过去 6 个月以上整体处于横盘洗盘状态；
+    3. 当前价格近期突破建仓平台上沿；
+    4. 最近 15 个交易日内有 2-3 个涨停，或者多次 5%以上大阳线吸引人气；
+    5. 当前价格不能偏离平台过远，避免追高。
+    """
+
+    name = "长庄-建仓洗盘突破"
+    category = "主升"
+
+    def match(self, row: pd.Series) -> bool:
+        need_cols = [
+            "收盘",
+            "成交量",
+            "建仓区间最高价",
+            "建仓区间最低价",
+            "建仓平台振幅",
+            "洗盘区间最高价",
+            "洗盘区间最低价",
+            "洗盘区间振幅",
+            "近15日涨停次数",
+            "近15日5点大阳次数",
+            "近5日是否突破建仓平台",
+            "近5日平均成交量",
+            "建仓后基准成交量",
+        ]
+
+        for col in need_cols:
+            if col not in row.index or pd.isna(row[col]):
+                return False
+
+        close = float(row["收盘"])
+        build_high = float(row["建仓区间最高价"])
+        build_low = float(row["建仓区间最低价"])
+        build_range_pct = float(row["建仓平台振幅"])
+
+        wash_high = float(row["洗盘区间最高价"])
+        wash_low = float(row["洗盘区间最低价"])
+        wash_range_pct = float(row["洗盘区间振幅"])
+
+        limit_up_count = float(row["近15日涨停次数"])
+        big_yang_count = float(row["近15日5点大阳次数"])
+
+        recent_vol = float(row["近5日平均成交量"])
+        base_vol = float(row["建仓后基准成交量"])
+
+        if close <= 0 or build_high <= 0 or build_low <= 0 or wash_high <= 0 or wash_low <= 0:
+            return False
+
+        # 1. 3-6个月建仓平台：振幅不能太大
+        is_build_platform = build_range_pct <= 0.45
+
+        # 2. 6个月以上洗盘：允许比建仓平台更宽，但不能已经走成大主升
+        is_long_wash = wash_range_pct <= 0.70
+
+        # 3. 近期突破建仓平台
+        recent_breakout = bool(row["近5日是否突破建仓平台"])
+
+        # 4. 当前不能离平台太远，避免已经高潮
+        not_overextended = close <= build_high * 1.18
+
+        # 5. 当前也不能远高于洗盘区间太多
+        not_too_high_from_wash = close <= wash_high * 1.25
+
+        # 6. 近期人气：2-3个涨停，或者至少2根5%以上大阳
+        has_popularity = (
+            2 <= limit_up_count <= 3
+            or big_yang_count >= 2
+        )
+
+        # 7. 量能确认：近5日均量比前期基准放大
+        volume_ok = True
+        if base_vol > 0:
+            volume_ok = recent_vol >= base_vol * 1.3
+
+        # 8. 当天不能接近涨停追高
+        pct = pd.to_numeric(row.get("涨跌幅", pd.NA), errors="coerce")
+        not_limit_chasing = True if pd.isna(pct) else pct < 9.5
+
+        return bool(
+            is_build_platform
+            and is_long_wash
+            and recent_breakout
+            and not_overextended
+            and not_too_high_from_wash
+            and has_popularity
+            and volume_ok
+            and not_limit_chasing
+        )
+    """
+    长庄建仓洗盘后突破策略
+
+    逻辑：
+    1. 过去 3-6 个月存在明显建仓平台；
+    2. 过去 6 个月以上整体处于横盘洗盘状态；
+    3. 当前价格近期突破建仓平台上沿；
+    4. 最近 15 个交易日内有 2-3 个涨停，或者多次 5%以上大阳线吸引人气；
+    5. 当前价格不能偏离平台过远，避免追高。
+    """
+
+    name = "长庄-建仓洗盘突破"
+    category = "主升"
+
+    def match(self, df):
+        if df is None or len(df) < 180:
+            return False, ""
+
+        data = df.copy()
+
+        # 兼容字段
+        close_col = "close" if "close" in data.columns else "收盘"
+        high_col = "high" if "high" in data.columns else "最高"
+        low_col = "low" if "low" in data.columns else "最低"
+        vol_col = "volume" if "volume" in data.columns else "成交量"
+
+        if close_col not in data.columns or high_col not in data.columns or low_col not in data.columns:
+            return False, ""
+
+        data[close_col] = data[close_col].astype(float)
+        data[high_col] = data[high_col].astype(float)
+        data[low_col] = data[low_col].astype(float)
+
+        if vol_col in data.columns:
+            data[vol_col] = data[vol_col].astype(float)
+
+        today = data.iloc[-1]
+        today_close = float(today[close_col])
+
+        # =========================================================
+        # 1. 建仓区间：最近 60-120 个交易日
+        # 大概对应 3-6 个月
+        # =========================================================
+        build_window = data.iloc[-120:-20]
+
+        if len(build_window) < 60:
+            return False, ""
+
+        build_high = build_window[high_col].max()
+        build_low = build_window[low_col].min()
+        build_mid = (build_high + build_low) / 2
+
+        if build_mid <= 0:
+            return False, ""
+
+        build_range_pct = (build_high - build_low) / build_mid
+
+        # 建仓区间不能太剧烈，最好是平台震荡
+        # 这里设为 45%，你可以根据实盘改成 35%-55%
+        is_build_platform = build_range_pct <= 0.45
+
+        # =========================================================
+        # 2. 洗盘区间：最近 180 个交易日
+        # 大概对应 6个月以上
+        # 判断长期没有严重破位，也没有提前大幅主升
+        # =========================================================
+        wash_window = data.iloc[-180:-10]
+
+        wash_high = wash_window[high_col].max()
+        wash_low = wash_window[low_col].min()
+        wash_mid = (wash_high + wash_low) / 2
+
+        if wash_mid <= 0:
+            return False, ""
+
+        wash_range_pct = (wash_high - wash_low) / wash_mid
+
+        # 洗盘可以比建仓稍微宽一点，但不能已经走出大主升
+        is_long_wash = wash_range_pct <= 0.70
+
+        # 当前价格不能远高于 180 日平台太多
+        not_too_high_from_wash = today_close <= wash_high * 1.25
+
+        # =========================================================
+        # 3. 近期突破建仓价
+        # 用建仓区间高点作为“建仓价/平台压力位”
+        # 当前收盘价突破平台上沿
+        # =========================================================
+        breakout_price = build_high
+
+        recent_5 = data.iloc[-5:]
+        recent_breakout = (
+            today_close > breakout_price * 1.02
+            and recent_5[close_col].max() > breakout_price * 1.02
+        )
+
+        # 突破不能太远，避免已经高潮
+        not_overextended = today_close <= breakout_price * 1.18
+
+        # =========================================================
+        # 4. 近期人气：2-3 个涨停，或者多次 5% 大阳
+        # =========================================================
+        recent_15 = data.iloc[-15:].copy()
+
+        recent_15["pct_chg_calc"] = recent_15[close_col].pct_change() * 100
+
+        # 主板涨停近似按 9.8% 以上处理
+        limit_up_count = (recent_15["pct_chg_calc"] >= 9.8).sum()
+
+        # 5%以上大阳线
+        big_yang_count = (recent_15["pct_chg_calc"] >= 5.0).sum()
+
+        has_popularity = (
+            2 <= limit_up_count <= 3
+            or big_yang_count >= 2
+        )
+
+        # =========================================================
+        # 5. 量能确认：近期成交量放大
+        # =========================================================
+        volume_ok = True
+
+        if vol_col in data.columns:
+            recent_vol = data.iloc[-5:][vol_col].mean()
+            base_vol = data.iloc[-60:-10][vol_col].mean()
+
+            if base_vol > 0:
+                volume_ok = recent_vol >= base_vol * 1.3
+
+        # =========================================================
+        # 最终信号
+        # =========================================================
+        if (
+            is_build_platform
+            and is_long_wash
+            and not_too_high_from_wash
+            and recent_breakout
+            and not_overextended
+            and has_popularity
+            and volume_ok
+        ):
+            reason = (
+                f"长庄建仓洗盘后突破："
+                f"建仓平台振幅{build_range_pct * 100:.1f}%，"
+                f"6个月洗盘振幅{wash_range_pct * 100:.1f}%，"
+                f"突破价{breakout_price:.2f}，当前价{today_close:.2f}，"
+                f"近15日涨停{limit_up_count}次，5%以上大阳{big_yang_count}次"
+            )
+            return True, reason
+
+        return False, ""

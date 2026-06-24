@@ -19,6 +19,50 @@ MIN_AVG_AMOUNT_20D = 50_000_000      # 过去20天日均成交额 >= 5000万
 LIMIT_UP_PCT = 9.95                  # 主板涨停判断：涨幅 >= 9.95%
 LIMIT_UP_WINDOW = 15                 # 过去15个交易日
 
+# BaoStock 日线数据一般在盘后较晚才稳定更新。
+# 盘前/盘中扫描时，如果本地缓存最新日期是上一交易日，属于正常情况。
+DAILY_AUTO_UPDATE_AFTER_TIME = "17:30"
+
+
+def is_after_daily_auto_update_time(now=None, after_time: str = DAILY_AUTO_UPDATE_AFTER_TIME) -> bool:
+    """
+    是否已经到达允许自动更新 BaoStock 日线缓存的时间。
+
+    默认 17:30 之后才允许自动请求 BaoStock 补当天日K；
+    17:30 之前优先使用本地 cache/hist，避免盘前扫描被逐只请求拖慢。
+    """
+
+    now = now or datetime.now()
+
+    try:
+        target_time = datetime.strptime(str(after_time), "%H:%M").time()
+    except Exception:
+        target_time = datetime.strptime(DAILY_AUTO_UPDATE_AFTER_TIME, "%H:%M").time()
+
+    return now.time() >= target_time
+
+
+def should_update_daily_cache(
+    *,
+    cache_only: bool = False,
+    force_update: bool = False,
+    after_time: str = DAILY_AUTO_UPDATE_AFTER_TIME,
+) -> bool:
+    """
+    日线缓存更新决策：
+    1. cache_only=True：永远不请求 BaoStock；
+    2. force_update=True：强制请求 BaoStock；
+    3. 默认：17:30 之后才允许自动请求 BaoStock。
+    """
+
+    if cache_only:
+        return False
+
+    if force_update:
+        return True
+
+    return is_after_daily_auto_update_time(after_time=after_time)
+
 
 def check_secondary_filters(row) -> bool:
     """
@@ -50,7 +94,13 @@ def get_bs_code(code: str) -> str:
     return f"sz.{code}"
 
 
-def get_hist_data_baostock(code: str, use_cache: bool = True) -> pd.DataFrame:
+def get_hist_data_baostock(
+    code: str,
+    use_cache: bool = True,
+    cache_only: bool = False,
+    force_update: bool = False,
+    auto_update_after_time: str = DAILY_AUTO_UPDATE_AFTER_TIME,
+) -> pd.DataFrame:
     """
     使用 BaoStock 获取个股日 K 线数据。
 
@@ -68,6 +118,11 @@ def get_hist_data_baostock(code: str, use_cache: bool = True) -> pd.DataFrame:
 
     end_date = datetime.now().strftime("%Y-%m-%d")
     bs_code = get_bs_code(code)
+    allow_update = should_update_daily_cache(
+        cache_only=cache_only,
+        force_update=force_update,
+        after_time=auto_update_after_time,
+    )
 
     old_df = pd.DataFrame()
 
@@ -75,26 +130,54 @@ def get_hist_data_baostock(code: str, use_cache: bool = True) -> pd.DataFrame:
         old_df = pd.read_csv(cache_file, dtype={"代码": str})
 
         if not old_df.empty and "日期" in old_df.columns:
-            old_df["日期"] = pd.to_datetime(old_df["日期"])
-            last_date = old_df["日期"].max()
+            old_df["日期"] = pd.to_datetime(old_df["日期"], errors="coerce")
+            old_df = old_df.dropna(subset=["日期"])
+            old_df = old_df.drop_duplicates(subset=["日期"], keep="last")
+            old_df = old_df.sort_values("日期")
 
-            # 如果缓存已经更新到今天，直接使用
-            if last_date.strftime("%Y-%m-%d") >= end_date:
+            if not old_df.empty:
+                last_date = old_df["日期"].max()
+
+                # 缓存已到今天，直接使用。
+                if last_date.strftime("%Y-%m-%d") >= end_date:
+                    if VERBOSE_KLINE_LOG:
+                        print(f"{code} 使用本地BaoStock缓存，最新K线日期：{last_date.strftime('%Y-%m-%d')}")
+                    old_df["日期"] = old_df["日期"].dt.strftime("%Y-%m-%d")
+                    return old_df
+
+                # 17:30 前，或者 cache_only 模式，允许昨天缓存直接参与盘前扫描。
+                if not allow_update:
+                    if VERBOSE_KLINE_LOG:
+                        print(
+                            f"{code} 使用本地BaoStock缓存分析，"
+                            f"最新K线日期：{last_date.strftime('%Y-%m-%d')}；"
+                            f"未到 {auto_update_after_time} 或已指定只用缓存，不请求 BaoStock。"
+                        )
+                    old_df["日期"] = old_df["日期"].dt.strftime("%Y-%m-%d")
+                    return old_df
+
+                # 17:30 后，或者强制更新时，才从最后日期的下一天开始补数据。
+                start_date = (last_date + timedelta(days=1)).strftime("%Y-%m-%d")
                 if VERBOSE_KLINE_LOG:
-                    print(f"{code} 使用本地BaoStock缓存，最新K线日期：{last_date.strftime('%Y-%m-%d')}")
-                old_df["日期"] = old_df["日期"].dt.strftime("%Y-%m-%d")
-                return old_df
-
-            # 从最后日期的下一天开始补数据
-            start_date = (last_date + timedelta(days=1)).strftime("%Y-%m-%d")
-            if VERBOSE_KLINE_LOG:
-                print(f"{code} 本地BaoStock缓存最新K线日期：{last_date.strftime('%Y-%m-%d')}，开始增量更新...")
+                    print(f"{code} 本地BaoStock缓存最新K线日期：{last_date.strftime('%Y-%m-%d')}，开始增量更新...")
+            else:
+                start_date = (datetime.now() - timedelta(days=365)).strftime("%Y-%m-%d")
+                if not allow_update:
+                    return pd.DataFrame()
+                if VERBOSE_KLINE_LOG:
+                    print(f"{code} 缓存文件异常，重新获取最近365天K线...")
         else:
             start_date = (datetime.now() - timedelta(days=365)).strftime("%Y-%m-%d")
+            if not allow_update:
+                return pd.DataFrame()
             if VERBOSE_KLINE_LOG:
                 print(f"{code} 缓存文件异常，重新获取最近365天K线...")
     else:
         start_date = (datetime.now() - timedelta(days=365)).strftime("%Y-%m-%d")
+        if not allow_update:
+            if VERBOSE_KLINE_LOG:
+                print(f"{code} 无本地BaoStock缓存，且未到 {auto_update_after_time}，跳过 BaoStock 请求。")
+            return pd.DataFrame()
         if VERBOSE_KLINE_LOG:
             print(f"{code} 无本地BaoStock缓存，首次获取最近365天K线...")
 
@@ -212,8 +295,19 @@ def get_hist_data_baostock(code: str, use_cache: bool = True) -> pd.DataFrame:
 
 
 # 兼容旧函数名：如果其他地方还调用 get_hist_data_tushare，也转到 BaoStock。
-def get_hist_data_tushare(code: str, use_cache: bool = True, pro=None) -> pd.DataFrame:
-    return get_hist_data_baostock(code, use_cache=use_cache)
+def get_hist_data_tushare(
+    code: str,
+    use_cache: bool = True,
+    pro=None,
+    cache_only: bool = False,
+    force_update: bool = False,
+) -> pd.DataFrame:
+    return get_hist_data_baostock(
+        code,
+        use_cache=use_cache,
+        cache_only=cache_only,
+        force_update=force_update,
+    )
 
 
 def prepare_hist_data(df: pd.DataFrame) -> pd.DataFrame:
@@ -275,6 +369,90 @@ def prepare_hist_data(df: pd.DataFrame) -> pd.DataFrame:
 
     # 5天前的60日均线
     df["SMA60_5日前"] = df["SMA60"].shift(5)
+
+    # =========================
+    # 长庄建仓洗盘突破策略辅助字段
+    # =========================
+    # 建仓区间：最近 60-120 个交易日之间，避开最近20天的突破阶段。
+    # 等价于取 [-120:-20] 这一段作为建仓平台。
+    df["建仓区间最高价"] = df["最高"].shift(20).rolling(100).max()
+    df["建仓区间最低价"] = df["最低"].shift(20).rolling(100).min()
+    df["建仓区间中位价"] = (df["建仓区间最高价"] + df["建仓区间最低价"]) / 2
+    df["建仓平台振幅"] = (
+        df["建仓区间最高价"] - df["建仓区间最低价"]
+    ) / df["建仓区间中位价"]
+
+    # 洗盘区间：最近 180 个交易日，避开最近10天。
+    # 用来判断是否经历了较长时间横盘洗盘。
+    df["洗盘区间最高价"] = df["最高"].shift(10).rolling(170).max()
+    df["洗盘区间最低价"] = df["最低"].shift(10).rolling(170).min()
+    df["洗盘区间中位价"] = (df["洗盘区间最高价"] + df["洗盘区间最低价"]) / 2
+    df["洗盘区间振幅"] = (
+        df["洗盘区间最高价"] - df["洗盘区间最低价"]
+    ) / df["洗盘区间中位价"]
+
+    # 近期人气：近15日涨停次数，或者5%以上大阳次数。
+    df["近15日5点大阳次数"] = (
+        df["涨跌幅"] >= 5.0
+    ).rolling(15).sum()
+
+    # 近期是否突破建仓平台上沿。
+    df["是否突破建仓平台"] = df["收盘"] > df["建仓区间最高价"] * 1.02
+    df["近5日是否突破建仓平台"] = (
+        df["是否突破建仓平台"].rolling(5).sum() >= 1
+    )
+
+    # 近期量能是否放大。
+    df["近5日平均成交量"] = df["成交量"].rolling(5).mean()
+    df["建仓后基准成交量"] = df["成交量"].shift(10).rolling(50).mean()
+
+    # =========================
+    # 长庄建仓洗盘突破策略：防止火箭式加速过滤字段
+    # =========================
+    df["近10日涨幅"] = df["收盘"] / df["收盘"].shift(10) - 1
+    df["近20日涨幅"] = df["收盘"] / df["收盘"].shift(20) - 1
+    df["近60日涨幅"] = df["收盘"] / df["收盘"].shift(60) - 1
+
+    df["近10日5点大阳次数"] = (
+        df["涨跌幅"] >= 5.0
+    ).rolling(10).sum()
+
+    df["近20日5点大阳次数"] = (
+        df["涨跌幅"] >= 5.0
+    ).rolling(20).sum()
+
+    df["距离20日线乖离"] = df["收盘"] / df["SMA20"] - 1
+    df["距离60日线乖离"] = df["收盘"] / df["SMA60"] - 1
+
+    df["SMA20_10日前"] = df["SMA20"].shift(10)
+    df["SMA60_20日前"] = df["SMA60"].shift(20)
+
+    df["SMA20近10日涨幅"] = df["SMA20"] / df["SMA20_10日前"] - 1
+    df["SMA60近20日涨幅"] = df["SMA60"] / df["SMA60_20日前"] - 1
+
+    df["单日振幅"] = df["最高"] / df["最低"] - 1
+
+    df["近20日高位巨震次数"] = (
+        (df["单日振幅"] >= 0.12)
+        | (df["涨跌幅"] <= -6.0)
+    ).rolling(20).sum()
+
+    df["近20日最高价"] = df["最高"].rolling(20).max()
+    df["近20日最低价"] = df["最低"].rolling(20).min()
+    df["近20日最大区间涨幅"] = df["近20日最高价"] / df["近20日最低价"] - 1
+
+    df["近60日最高价"] = df["最高"].rolling(60).max()
+    df["近60日最低价"] = df["最低"].rolling(60).min()
+    df["近60日最大区间涨幅"] = df["近60日最高价"] / df["近60日最低价"] - 1
+
+    df["是否阶梯趋势"] = (
+        (df["收盘"] > df["SMA20"])
+        & (df["SMA20"] > df["SMA60"])
+        & (df["SMA20近10日涨幅"] > 0)
+        & (df["SMA60近20日涨幅"] > 0)
+        & (df["距离20日线乖离"] <= 0.28)
+        & (df["距离60日线乖离"] <= 0.75)
+    )
 
     # =========================
     # 主升策略5：大阳启动后3-5个交易日缩量回踩不破5/10日线
@@ -553,14 +731,23 @@ def evaluate_latest_signal(latest: pd.Series):
     return True, "、".join(hit_strategies), info
 
 
-def check_main_rising_signal(code: str):
+def check_main_rising_signal(
+    code: str,
+    cache_only: bool = False,
+    force_update: bool = False,
+):
     """
     检查某只股票是否命中已注册日线策略。
     返回：是否命中、命中的策略、最新行情指标。
     """
 
     try:
-        hist_df = get_hist_data_baostock(code)
+        hist_df = get_hist_data_baostock(
+            code,
+            use_cache=True,
+            cache_only=cache_only,
+            force_update=force_update,
+        )
 
         if hist_df is None or hist_df.empty:
             return False, "", None
@@ -579,7 +766,11 @@ def check_main_rising_signal(code: str):
         return False, "", None
 
 
-def scan_main_rising_stocks(stock_pool_df: pd.DataFrame) -> pd.DataFrame:
+def scan_main_rising_stocks(
+    stock_pool_df: pd.DataFrame,
+    cache_only: bool = False,
+    force_update: bool = False,
+) -> pd.DataFrame:
     """
     对基础股票池进行主升信号扫描。
 
@@ -591,13 +782,29 @@ def scan_main_rising_stocks(stock_pool_df: pd.DataFrame) -> pd.DataFrame:
 
     result_list = []
     total = len(stock_pool_df)
+    allow_update = should_update_daily_cache(
+        cache_only=cache_only,
+        force_update=force_update,
+    )
 
-    print("正在登录 BaoStock，用于第二步 K 线扫描...")
-    lg = bs.login()
+    if allow_update:
+        if force_update:
+            print("日线扫描模式：强制更新 BaoStock 日K缓存。")
+        else:
+            print(f"日线扫描模式：已到 {DAILY_AUTO_UPDATE_AFTER_TIME} 后，允许 BaoStock 增量更新。")
 
-    if lg.error_code != "0":
-        print(f"BaoStock 登录失败：{lg.error_msg}")
-        return pd.DataFrame()
+        print("正在登录 BaoStock，用于第二步 K 线扫描...")
+        lg = bs.login()
+
+        if lg.error_code != "0":
+            print(f"BaoStock 登录失败：{lg.error_msg}")
+            return pd.DataFrame()
+    else:
+        lg = None
+        if cache_only:
+            print("日线扫描模式：只使用本地 cache/hist，不请求 BaoStock。")
+        else:
+            print(f"日线扫描模式：未到 {DAILY_AUTO_UPDATE_AFTER_TIME}，使用本地 cache/hist，不请求 BaoStock。")
 
     scan_start_time = time.time()
 
@@ -606,7 +813,11 @@ def scan_main_rising_stocks(stock_pool_df: pd.DataFrame) -> pd.DataFrame:
             code = str(row["代码"]).zfill(6)
             name = row["名称"]
 
-            is_hit, hit_strategy, info = check_main_rising_signal(code)
+            is_hit, hit_strategy, info = check_main_rising_signal(
+                code,
+                cache_only=cache_only,
+                force_update=force_update,
+            )
 
             if is_hit:
                 result = row.to_dict()
@@ -631,14 +842,16 @@ def scan_main_rising_stocks(stock_pool_df: pd.DataFrame) -> pd.DataFrame:
                 flush=True,
             )
 
-            # BaoStock相对稳定，轻微限速即可
-            time.sleep(0.05)
+            # 只有真实请求 BaoStock 时才需要轻微限速；纯缓存扫描不 sleep。
+            if allow_update:
+                time.sleep(0.05)
 
         print()
 
     finally:
-        bs.logout()
-        print("BaoStock 已退出。")
+        if allow_update:
+            bs.logout()
+            print("BaoStock 已退出。")
 
     total_seconds = time.time() - scan_start_time
 

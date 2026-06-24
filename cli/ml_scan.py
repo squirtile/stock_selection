@@ -31,6 +31,47 @@ if PROJECT_ROOT not in sys.path:
 from ml_engine.ml_classifier import MLPatternModel
 from ml_engine.pattern_extract import load_candidate_codes, normalize_code, extract_indicator_matrix
 
+def load_stock_name_map(map_file: str = os.path.join("cache", "stock_name_map.csv")) -> dict[str, str]:
+    """Load local code-name mapping from cache/stock_name_map.csv."""
+    if not os.path.exists(map_file):
+        print(f"提示：未找到股票名称映射表：{map_file}，结果将只显示代码。")
+        print("可以先运行：python test/update_stock_name_map.py")
+        return {}
+
+    try:
+        name_df = pd.read_csv(map_file, dtype={"代码": str})
+    except Exception as e:
+        print(f"提示：读取股票名称映射表失败：{e}，结果将只显示代码。")
+        return {}
+
+    if name_df.empty or "代码" not in name_df.columns or "名称" not in name_df.columns:
+        print(f"提示：{map_file} 缺少 代码/名称 列，结果将只显示代码。")
+        return {}
+
+    name_df = name_df[["代码", "名称"]].copy()
+    name_df["代码"] = name_df["代码"].apply(normalize_code)
+    name_df["名称"] = name_df["名称"].astype(str).str.strip()
+    name_df = name_df.dropna(subset=["代码", "名称"])
+    name_df = name_df[name_df["代码"].astype(str).str.len() == 6]
+    name_df = name_df.drop_duplicates(subset=["代码"], keep="first")
+
+    return dict(zip(name_df["代码"], name_df["名称"]))
+
+
+def add_stock_names(df: pd.DataFrame, name_map: dict[str, str]) -> pd.DataFrame:
+    """Insert 名称 column after 代码 according to local name_map."""
+    if df is None or df.empty or "代码" not in df.columns:
+        return df
+
+    result = df.copy()
+    result["代码"] = result["代码"].apply(normalize_code)
+    result["名称"] = result["代码"].map(name_map).fillna("")
+
+    cols = list(result.columns)
+    cols.remove("名称")
+    code_idx = cols.index("代码")
+    cols.insert(code_idx + 1, "名称")
+    return result[cols]
 
 def print_df(df: pd.DataFrame):
     """Pretty print DataFrame in terminal."""
@@ -294,6 +335,7 @@ def main():
     parser.add_argument("--progress-every", type=int, default=20, help="每多少只刷新一次进度")
     parser.add_argument("--limit-up-threshold", type=float, default=9.85, help="涨停或接近涨停阈值，默认9.85")
     parser.add_argument("--trend-filter", action="store_true", help="启用趋势过滤，剔除下跌趋势、破位票、弱反抽票")
+    parser.add_argument("--name-map-file", default=os.path.join("cache", "stock_name_map.csv"), help="股票代码名称映射表，默认 cache/stock_name_map.csv")
     args = parser.parse_args()
 
     model = MLPatternModel.load(args.model)
@@ -340,6 +382,11 @@ def main():
         print("无有效 ML 扫描结果。")
         return
 
+    # 扫描完成后统一读取本地代码-名称映射表，并给所有结果补充“名称”列。
+    # 注意：不要放在 scan_one_code() 里每只股票读取一次，否则会拖慢扫描速度。
+    name_map = load_stock_name_map(args.name_map_file)
+    df = add_stock_names(df, name_map)
+
     signal_df = df[df["ML信号"] == True].copy()
 
     if not signal_df.empty:
@@ -353,20 +400,20 @@ def main():
         limit_up_df = pd.DataFrame(columns=list(df.columns) + ["信号分类"])
         watch_df = pd.DataFrame(columns=list(df.columns) + ["信号分类"])
 
-    print("\nML分数最高的前20只：")
-    print_df(df.head(20))
+    print("\nML分数最高的前10只：")
+    print_df(df.head(10))
 
     print("\n可观察候选，未涨停：")
     if watch_df.empty:
         print("暂无未涨停 ML 信号。")
     else:
-        print_df(watch_df)
+        print_df(watch_df.head(10))
 
     print("\n涨停或接近涨停，单独观察：")
     if limit_up_df.empty:
         print("暂无涨停或接近涨停 ML 信号。")
     else:
-        print_df(limit_up_df)
+        print_df(limit_up_df.head(10))
 
     print("\n触发ML信号的股票，全部：")
     if signal_df.empty:
