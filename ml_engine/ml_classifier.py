@@ -1,7 +1,7 @@
 """
 ML classifier for stock pattern prediction.
 
-Uses RandomForest to classify whether a 20-day indicator window
+Uses LightGBM to classify whether a 20-day indicator window
 will be followed by >= target_pct return within forward_horizon days.
 """
 
@@ -10,7 +10,10 @@ import sys
 
 import numpy as np
 import pandas as pd
-from sklearn.ensemble import RandomForestClassifier
+try:
+    from lightgbm import LGBMClassifier
+except ImportError:
+    LGBMClassifier = None
 from sklearn.preprocessing import StandardScaler
 from sklearn.decomposition import PCA
 from sklearn.model_selection import train_test_split
@@ -35,10 +38,10 @@ from ml_engine.pattern_extract import ML_INDICATOR_COLUMNS, DEFAULT_LOOKBACK
 
 class MLPatternModel:
     """
-    RandomForest-based classifier for stock patterns.
+    LightGBM-based classifier for stock patterns.
 
     Internally stores:
-      - model: RandomForestClassifier
+      - model: LGBMClassifier
       - scaler: StandardScaler (fitted)
       - pca: PCA or None
       - feature_cols: list of indicator column names
@@ -69,7 +72,7 @@ class MLPatternModel:
         self.feature_cols = feature_cols or list(ML_INDICATOR_COLUMNS)
         self.n_features = lookback * len(self.feature_cols)
 
-        self.model: RandomForestClassifier | None = None
+        self.model = None  # LGBMClassifier
         self.scaler: StandardScaler | None = None
         self.pca: PCA | None = None
         self._fitted = False
@@ -81,7 +84,7 @@ class MLPatternModel:
         validation_split: float = 0.0,
     ) -> dict:
         """
-        Fit scaler, PCA (if enabled), and RandomForest on training data.
+        Fit scaler, PCA (if enabled), and LightGBM on training data.
 
         Args:
           X: shape (n_samples, n_features)
@@ -124,14 +127,27 @@ class MLPatternModel:
                 self.use_pca = False
                 self.pca = None
 
+        # Keep the transformed values as numpy arrays so both LightGBM and
+        # older sklearn estimators (e.g. RandomForest) receive the same input shape.
+        X_train_scaled = np.asarray(X_train_scaled, dtype=np.float64)
+        if X_val is not None:
+            X_val_scaled = self._transform(X_val)
+        else:
+            X_val_scaled = None
+
         # Fit model
-        self.model = RandomForestClassifier(
+        if LGBMClassifier is None:
+            raise ImportError("LightGBM not installed. Run: pip install lightgbm")
+        
+        self.model = LGBMClassifier(
             n_estimators=self.n_estimators,
             max_depth=self.max_depth,
-            class_weight=self.class_weight,
+            learning_rate=0.05,
+            num_leaves=31,
+            min_child_samples=self.min_samples_leaf,
             random_state=self.random_state,
-            min_samples_leaf=self.min_samples_leaf,
             n_jobs=-1,
+            verbose=-1,
         )
         self.model.fit(X_train_scaled, y_train)
         self._fitted = True
@@ -140,20 +156,20 @@ class MLPatternModel:
         stats["train_accuracy"] = float(self.model.score(X_train_scaled, y_train))
 
         # Validation
-        if X_val is not None:
-            val_stats = self._evaluate(X_val, y_val)
+        if X_val_scaled is not None:
+            val_stats = self._evaluate_df(X_val_scaled, y_val)
             stats["validation"] = val_stats
 
         return stats
 
     def _transform(self, X: np.ndarray) -> np.ndarray:
-        """Apply scaler and PCA to input features."""
+        """Apply scaler and PCA to input features and return a numpy array."""
         if self.scaler is None:
             raise RuntimeError("Model not fitted; call fit() first.")
         X_scaled = self.scaler.transform(X)
         if self.pca is not None:
             X_scaled = self.pca.transform(X_scaled)
-        return X_scaled
+        return np.asarray(X_scaled, dtype=np.float64)
 
     def _evaluate(self, X: np.ndarray, y: np.ndarray) -> dict:
         """Compute validation metrics."""
@@ -167,6 +183,27 @@ class MLPatternModel:
 
         return {
             "accuracy": float(self.model.score(X_t, y)),
+            "precision": float(precision),
+            "recall": float(recall),
+            "f1": float(2 * precision * recall / (precision + recall) if (precision + recall) > 0 else 0.0),
+            "auc_roc": float(roc_auc_score(y, y_proba)),
+            "true_positives": int(tp),
+            "false_positives": int(fp),
+            "true_negatives": int(tn),
+            "false_negatives": int(fn),
+        }
+
+    def _evaluate_df(self, X_df: pd.DataFrame, y: np.ndarray) -> dict:
+        """Compute validation metrics from DataFrame."""
+        y_pred = self.model.predict(X_df)
+        y_proba = self.model.predict_proba(X_df)[:, 1]
+
+        tn, fp, fn, tp = confusion_matrix(y, y_pred).ravel()
+        precision = tp / (tp + fp) if (tp + fp) > 0 else 0.0
+        recall = tp / (tp + fn) if (tp + fn) > 0 else 0.0
+
+        return {
+            "accuracy": float(self.model.score(X_df, y)),
             "precision": float(precision),
             "recall": float(recall),
             "f1": float(2 * precision * recall / (precision + recall) if (precision + recall) > 0 else 0.0),

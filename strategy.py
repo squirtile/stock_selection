@@ -786,6 +786,8 @@ def scan_main_rising_stocks(
         cache_only=cache_only,
         force_update=force_update,
     )
+    scan_cache_only = cache_only
+    login_failed = False
 
     if allow_update:
         if force_update:
@@ -794,11 +796,23 @@ def scan_main_rising_stocks(
             print(f"日线扫描模式：已到 {DAILY_AUTO_UPDATE_AFTER_TIME} 后，允许 BaoStock 增量更新。")
 
         print("正在登录 BaoStock，用于第二步 K 线扫描...")
-        lg = bs.login()
+        lg = None
+        for attempt in range(3):
+            try:
+                lg = bs.login()
+                if getattr(lg, "error_code", None) == "0":
+                    break
+                print(f"BaoStock 第 {attempt + 1} 次登录失败：{getattr(lg, 'error_msg', '未知错误')}")
+            except Exception as exc:
+                print(f"BaoStock 第 {attempt + 1} 次登录异常：{exc}")
 
-        if lg.error_code != "0":
-            print(f"BaoStock 登录失败：{lg.error_msg}")
-            return pd.DataFrame()
+            if attempt < 2:
+                time.sleep(2)
+
+        if getattr(lg, "error_code", None) != "0":
+            login_failed = True
+            scan_cache_only = True
+            print("BaoStock 登录失败，切换为仅使用本地缓存继续扫描。")
     else:
         lg = None
         if cache_only:
@@ -815,8 +829,8 @@ def scan_main_rising_stocks(
 
             is_hit, hit_strategy, info = check_main_rising_signal(
                 code,
-                cache_only=cache_only,
-                force_update=force_update,
+                cache_only=scan_cache_only,
+                force_update=force_update and not login_failed,
             )
 
             if is_hit:

@@ -6,3 +6,4 @@ tabulate
 baostock
 wcwidth
 streamlit
+lightgbm
