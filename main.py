@@ -888,6 +888,7 @@ def run_daily(args=None):
         selected_df,
         cache_only=bool(getattr(args, "daily_cache_only", False)),
         force_update=bool(getattr(args, "force_update_daily", False)),
+        workers=getattr(args, "workers", 1),
     )
 
     if signal_df is None or signal_df.empty:
@@ -1120,6 +1121,13 @@ def parse_args():
         "--force-update-daily",
         action="store_true",
         help="daily 模式下强制请求 BaoStock 更新日K缓存，忽略17:30自动更新限制。",
+    )
+
+    parser.add_argument(
+        "--workers",
+        type=int,
+        default=1,
+        help="日线扫描并发线程数，默认1（单线程）。推荐 8。注意：联网更新阶段始终单线程。",
     )
 
     return parser.parse_args()

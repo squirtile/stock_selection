@@ -21,8 +21,8 @@ FEISHU_MINUTE_PUSH_ENABLE = True
 # 基础股票池筛选条件
 # =========================
 # 市值范围，单位：亿元
-MIN_MARKET_VALUE = 100
-MAX_MARKET_VALUE = 1500
+MIN_MARKET_VALUE = 1
+MAX_MARKET_VALUE = 5000
 
 # 排除行业关键词
 EXCLUDE_INDUSTRIES = [

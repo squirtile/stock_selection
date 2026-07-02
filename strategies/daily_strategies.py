@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pandas as pd
 
-from .base_strategy import BaseDailyStrategy
+from .base_strategy import BaseDailyStrategy, StrategySignal
 
 class VShapeReversalStrategy(BaseDailyStrategy):
     """N22-V型反转：急跌后放量反弹，最佳持仓4天，胜率67.27%。"""
@@ -866,3 +866,276 @@ class LongBuildWashBreakoutStrategy(BaseDailyStrategy):
             return True, reason
 
         return False, ""
+
+
+# ======================================================================================
+# 二波形态策略（合并版）
+# 样本：天创时尚603608、福达合金、黄河旋风600172
+#
+# 内部包含 4 个子条件，全部在 match() 中一次性检查：
+#   子条件① 回调结构：第一波大涨 → 阶梯式回调 → 缩量企稳
+#   子条件② MACD底背离：价格低位 + DIF拒绝新低或金叉
+#   子条件③ 地量反弹：缩量到极致 + 首日放量阳线
+#   子条件④ 平台支撑：回调到前期筹码平台附近
+#
+# 至少命中子条件①才算命中，子条件②③④为加分项。
+# reason 字段会标注命中了哪些子条件，方便复盘。
+# ======================================================================================
+
+class SecondWaveStrategy(BaseDailyStrategy):
+    """
+    二波形态：第一波大涨 → 阶梯回调 → 缩量企稳 → 二波启动。
+
+    命中条件：至少命中子条件①（回调结构），其余子条件为加分项。
+    """
+
+    name = "二波形态"
+    category = "主升"
+
+    # ------------------------------------------------------------------
+    # 子条件①：回调结构（核心，必须命中）
+    # ------------------------------------------------------------------
+    @staticmethod
+    def _check_pullback_structure(row: pd.Series) -> tuple[bool, str]:
+        """第一波涨幅够 + 回调充分且阶梯式 + 缩量 + 均线企稳"""
+        fields = [
+            "收盘", "涨跌幅", "成交量",
+            "SMA5", "SMA10", "SMA20", "SMA60",
+            "过去20日平均成交量",
+            "第一波涨幅", "从高点回调幅度", "距前高空间",
+            "缩量比5日", "MA5趋势", "阶梯式回调",
+        ]
+        for c in fields:
+            if c not in row.index or pd.isna(row[c]):
+                return False, "字段缺失"
+
+        close  = float(row["收盘"])
+        pct    = float(row["涨跌幅"])
+        vol    = float(row["成交量"])
+        avg20  = float(row["过去20日平均成交量"])
+        ma5    = float(row["SMA5"])
+        ma20   = float(row["SMA20"])
+        ma60   = float(row["SMA60"])
+
+        wave   = float(row["第一波涨幅"])         # 正
+        dd     = float(row["从高点回调幅度"])      # 负
+        room   = float(row["距前高空间"])          # 正
+        shrink = float(row["缩量比5日"])
+        ma5_d  = float(row["MA5趋势"])
+        stair  = bool(row["阶梯式回调"])
+
+        if close <= 0 or ma20 <= 0 or ma60 <= 0:
+            return False, "价格或均线异常"
+
+        # ① 第一波涨幅 >= 30%
+        if wave < 0.30:
+            return False, f"第一波涨幅不足({wave*100:.0f}%)"
+
+        # ② 回调 15%~45%（第一波涨超100%的允许最深回调55%）
+        max_dd = 0.55 if wave >= 1.0 else 0.45
+        if dd > -0.15:
+            return False, f"回调不足({dd*100:.0f}%)"
+        if dd < -max_dd:
+            return False, f"回调过深({dd*100:.0f}%)"
+
+        # ③ 中期均线未破位
+        if close < ma60 * 0.92:
+            return False, "跌破MA60"
+        if ma20 < ma60 * 0.95:
+            return False, "MA20明显低于MA60"
+
+        # ④ 缩量：近期量 <= 前波峰量50%
+        if shrink > 0.50:
+            return False, f"未缩量(比{shrink*100:.0f}%)"
+
+        # ⑤ 阶梯式回调（非直线崩盘）
+        if not stair:
+            return False, "非阶梯式回调"
+
+        # ⑥ 企稳：收盘站上MA5，MA5不再加速下行（允许轻微下行接近走平）
+        if close < ma5:
+            return False, "未站上MA5"
+        if ma5_d < -0.035 * close:
+            return False, "MA5仍在下行"
+
+        # ⑦ 距前高还有空间
+        if room < 0.08:
+            return False, "距前高太近"
+
+        # ⑧ 当天温和量能，不追涨停（放宽量比：回调末端允许温和量）
+        if pct >= 9.5:
+            return False, "接近涨停"
+        if vol < avg20 * 0.50:
+            return False, "量能不足"
+
+        return True, "✓"
+
+    # ------------------------------------------------------------------
+    # 子条件②：MACD底背离确认
+    # ------------------------------------------------------------------
+    @staticmethod
+    def _check_macd_divergence(row: pd.Series) -> tuple[bool, str]:
+        fields = ["MACD底背离", "DIF金叉", "DIF", "涨跌幅"]
+        for c in fields:
+            if c not in row.index or pd.isna(row[c]):
+                return False, ""
+
+        divergence   = bool(row["MACD底背离"])
+        golden_cross = bool(row["DIF金叉"])
+        dif          = float(row["DIF"])
+        pct          = float(row["涨跌幅"])
+
+        if not divergence and not golden_cross:
+            return False, ""
+
+        # DIF在零轴下方或刚上零轴
+        if dif > 0.5:
+            return False, ""
+
+        if pct >= 9.5:
+            return False, ""
+
+        tags = []
+        if divergence:
+            tags.append("底背离")
+        if golden_cross:
+            tags.append("金叉")
+        return True, "+".join(tags)
+
+    # ------------------------------------------------------------------
+    # 子条件③：地量反弹
+    # ------------------------------------------------------------------
+    @staticmethod
+    def _check_volume_dry_up(row: pd.Series) -> tuple[bool, str]:
+        fields = [
+            "收盘", "涨跌幅", "成交量", "开盘",
+            "缩量比5日", "缩量比10日",
+            "过去20日平均成交量", "SMA5", "SMA10",
+        ]
+        for c in fields:
+            if c not in row.index or pd.isna(row[c]):
+                return False, ""
+
+        close   = float(row["收盘"])
+        open_   = float(row["开盘"])
+        pct     = float(row["涨跌幅"])
+        vol     = float(row["成交量"])
+        avg20   = float(row["过去20日平均成交量"])
+        ma5     = float(row["SMA5"])
+        ma10    = float(row["SMA10"])
+        s5      = float(row["缩量比5日"])
+        s10     = float(row["缩量比10日"])
+
+        # 地量：5日或10日缩量到峰值的25%以下
+        if s5 > 0.25 and s10 > 0.25:
+            return False, ""
+
+        # 首日放量：今日量 > 近5日均量 × 1.8
+        est_5d = avg20 * 0.35  # 地量阶段的近似5日均量
+        if vol < est_5d * 1.8:
+            return False, ""
+
+        # 阳线
+        if close <= open_:
+            return False, ""
+
+        # 温和涨幅 2%~7%
+        if pct < 2.0 or pct > 7.0:
+            return False, ""
+
+        # 站上短期均线
+        if close < ma5 or close < ma10 * 0.99:
+            return False, ""
+
+        return True, "地量反弹"
+
+    # ------------------------------------------------------------------
+    # 子条件④：前期平台支撑
+    # ------------------------------------------------------------------
+    @staticmethod
+    def _check_platform_support(row: pd.Series) -> tuple[bool, str]:
+        fields = [
+            "收盘", "涨跌幅", "成交量",
+            "SMA5", "SMA20", "SMA60",
+            "过去20日平均成交量",
+            "从高点回调幅度", "接近前期平台", "缩量比5日",
+        ]
+        for c in fields:
+            if c not in row.index or pd.isna(row[c]):
+                return False, ""
+
+        close     = float(row["收盘"])
+        pct       = float(row["涨跌幅"])
+        vol       = float(row["成交量"])
+        avg20     = float(row["过去20日平均成交量"])
+        ma5       = float(row["SMA5"])
+        ma20      = float(row["SMA20"])
+        ma60      = float(row["SMA60"])
+        dd        = float(row["从高点回调幅度"])
+        shrink    = float(row["缩量比5日"])
+        near_plat = bool(row["接近前期平台"])
+
+        if dd > -0.15:
+            return False, ""
+        if not near_plat:
+            return False, ""
+        if shrink > 0.50:
+            return False, ""
+        if close < ma5:
+            return False, ""
+        if close < ma60 * 0.95 or ma20 < ma60 * 0.97:
+            return False, ""
+        if vol < avg20 * 0.70:
+            return False, ""
+        if pct >= 9.5:
+            return False, ""
+
+        return True, "平台支撑"
+
+    # ------------------------------------------------------------------
+    # 主入口
+    # ------------------------------------------------------------------
+    def match(self, row: pd.Series) -> bool:
+        """至少命中子条件①（回调结构）才算命中。"""
+        ok, _ = self._check_pullback_structure(row)
+        return ok
+
+    def evaluate(self, row: pd.Series) -> StrategySignal | None:
+        if not self.enabled:
+            return None
+
+        try:
+            # 依次检查 4 个子条件
+            r1, t1 = self._check_pullback_structure(row)
+            r2, t2 = self._check_macd_divergence(row)
+            r3, t3 = self._check_volume_dry_up(row)
+            r4, t4 = self._check_platform_support(row)
+
+            # 至少命中子条件①
+            if not r1:
+                return None
+
+            # 组装命中标签
+            parts = []
+            if r1:
+                parts.append("回调结构")
+            if r2:
+                parts.append(f"MACD({t2})")
+            if r3:
+                parts.append(t3)
+            if r4:
+                parts.append(t4)
+
+            hit_count = sum([r1, r2, r3, r4])
+            reason = " + ".join(parts)
+            if hit_count >= 3:
+                reason = f"【强】{reason}"
+            elif hit_count == 2:
+                reason = f"【中】{reason}"
+            else:
+                reason = f"【弱】{reason}"
+
+            return StrategySignal(name=self.name, category=self.category, reason=reason)
+
+        except Exception:
+            return None

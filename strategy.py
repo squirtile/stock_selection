@@ -2,7 +2,9 @@
 
 import os
 import time
+import warnings
 from datetime import datetime, timedelta
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import pandas as pd
 import baostock as bs
@@ -68,14 +70,10 @@ def check_secondary_filters(row) -> bool:
     """
     策略命中后的统一二次过滤：
 
-    1. 过去20天日均成交额 >= 5000万
-    2. 过去15个交易日，含今日，至少出现1次涨停
+    1. 过去20天日均成交额 >= 5000万（保证流动性）
     """
 
-    return (
-        row["过去20日日均成交额"] >= MIN_AVG_AMOUNT_20D
-        and row["近15日涨停次数"] >= 1
-    )
+    return row["过去20日日均成交额"] >= MIN_AVG_AMOUNT_20D
 
 
 def get_bs_code(code: str) -> str:
@@ -315,6 +313,9 @@ def prepare_hist_data(df: pd.DataFrame) -> pd.DataFrame:
     整理 K 线数据，计算策略所需指标。
     """
 
+    # 抑制批量添加列时 pandas 的 PerformanceWarning（逐列赋值是正常的）
+    warnings.filterwarnings("ignore", category=pd.errors.PerformanceWarning)
+
     df = df.copy()
 
     df["日期"] = pd.to_datetime(df["日期"])
@@ -544,6 +545,72 @@ def prepare_hist_data(df: pd.DataFrame) -> pd.DataFrame:
         df.iat[pos, df.columns.get_loc("回调缩量")] = volume_shrink
         df.iat[pos, df.columns.get_loc("当前不破10日线")] = current_no_break_ma10
 
+    # =====================================================================
+    # 二波形态策略辅助字段
+    # 样本：天创时尚603608、福达合金、黄河旋风600172
+    # =====================================================================
+
+    # ---- 120日维度：识别完整的第一波 ----
+    df["近120日最高收盘"] = df["收盘"].rolling(120, min_periods=60).max()
+    df["近120日最低收盘"] = df["收盘"].rolling(120, min_periods=60).min()
+    df["第一波涨幅"] = df["近120日最高收盘"] / df["近120日最低收盘"] - 1
+    df["从高点回调幅度"] = df["收盘"] / df["近120日最高收盘"] - 1   # 负值=已回调
+    df["距前高空间"] = 1 - df["收盘"] / df["近120日最高收盘"]       # 正值=还有空间
+
+    # ---- 成交量维度：缩量判断 ----
+    df["近60日最大量"] = df["成交量"].rolling(60, min_periods=40).max()
+    df["近5日均量"] = df["成交量"].rolling(5, min_periods=3).mean()
+    df["近10日均量"] = df["成交量"].rolling(10, min_periods=5).mean()
+    df["缩量比5日"] = df["近5日均量"] / df["近60日最大量"]   # 越小越缩量
+    df["缩量比10日"] = df["近10日均量"] / df["近60日最大量"]
+
+    # ---- 均线趋势 ----
+    df["MA5_3日前"] = df["SMA5"].shift(3)
+    df["MA5趋势"] = df["SMA5"] - df["MA5_3日前"]  # >0 = 上翘
+    df["MA10_5日前"] = df["SMA10"].shift(5)
+    df["MA10趋势"] = df["SMA10"] - df["MA10_5日前"]
+
+    # ---- MACD（底背离判断）----
+    df["EMA12"] = df["收盘"].ewm(span=12, adjust=False).mean()
+    df["EMA26"] = df["收盘"].ewm(span=26, adjust=False).mean()
+    df["DIF"] = df["EMA12"] - df["EMA26"]
+    df["DEA"] = df["DIF"].ewm(span=9, adjust=False).mean()
+    df["MACD柱"] = 2 * (df["DIF"] - df["DEA"])
+
+    df["DIF_昨日"] = df["DIF"].shift(1)
+    df["DEA_昨日"] = df["DEA"].shift(1)
+    df["DIF金叉"] = (df["DIF_昨日"] <= df["DEA_昨日"]) & (df["DIF"] > df["DEA"])
+
+    # 底背离：近20日价格新低但DIF拒绝新低
+    df["近20日最低收盘"] = df["收盘"].rolling(20, min_periods=15).min()
+    df["近20日最低DIF"] = df["DIF"].rolling(20, min_periods=15).min()
+    df["前20日最低收盘"] = df["近20日最低收盘"].shift(20)
+    df["前20日最低DIF"] = df["近20日最低DIF"].shift(20)
+    df["MACD底背离"] = (
+        (df["近20日最低收盘"] <= df["前20日最低收盘"] * 1.02)
+        & (df["近20日最低DIF"] > df["前20日最低DIF"])
+    )
+
+    # ---- 回调结构：阶梯式（非直线暴跌），近20日有过像样的反弹阳线 ----
+    df["近20日最大涨幅"] = df["涨跌幅"].rolling(20, min_periods=10).max()
+    df["阶梯式回调"] = df["近20日最大涨幅"] >= 3.0
+
+    # ---- 前期平台支撑：40~60天前的20日均价作为平台参考 ----
+    df["远期均价"] = df["收盘"].shift(40).rolling(20).mean()
+    df["接近前期平台"] = (
+        df["远期均价"] > 0
+        & (df["收盘"] >= df["远期均价"] * 0.92)
+        & (df["收盘"] <= df["远期均价"] * 1.08)
+    )
+
+    # ---- 近60日涨停次数（判断"曾经热过"）----
+    df["近60日涨停次数"] = (
+        df["涨跌幅"] >= 9.95
+    ).rolling(60, min_periods=30).sum()
+
+    # 合并碎片化的 DataFrame，消除 PerformanceWarning
+    df = df.copy()
+
     return df
 
 
@@ -770,14 +837,14 @@ def scan_main_rising_stocks(
     stock_pool_df: pd.DataFrame,
     cache_only: bool = False,
     force_update: bool = False,
+    workers: int = 1,
 ) -> pd.DataFrame:
     """
     对基础股票池进行主升信号扫描。
 
-    BaoStock 版本：
-    1. 统一登录一次 BaoStock
-    2. 历史K线优先读取本地 cache/hist/*_bs.csv
-    3. 终端只单行刷新扫描进度，不逐只刷屏
+    两阶段策略（解决 BaoStock 不支持多线程的问题）：
+    阶段1：单线程更新所有缓存（如需联网）
+    阶段2：多线程从缓存扫描（workers 默认 1，纯缓存推荐 8）
     """
 
     result_list = []
@@ -786,16 +853,16 @@ def scan_main_rising_stocks(
         cache_only=cache_only,
         force_update=force_update,
     )
-    scan_cache_only = cache_only
     login_failed = False
 
+    # ---------- 登录 ----------
     if allow_update:
         if force_update:
             print("日线扫描模式：强制更新 BaoStock 日K缓存。")
         else:
             print(f"日线扫描模式：已到 {DAILY_AUTO_UPDATE_AFTER_TIME} 后，允许 BaoStock 增量更新。")
 
-        print("正在登录 BaoStock，用于第二步 K 线扫描...")
+        print("正在登录 BaoStock...")
         lg = None
         for attempt in range(3):
             try:
@@ -805,62 +872,123 @@ def scan_main_rising_stocks(
                 print(f"BaoStock 第 {attempt + 1} 次登录失败：{getattr(lg, 'error_msg', '未知错误')}")
             except Exception as exc:
                 print(f"BaoStock 第 {attempt + 1} 次登录异常：{exc}")
-
             if attempt < 2:
                 time.sleep(2)
 
         if getattr(lg, "error_code", None) != "0":
             login_failed = True
-            scan_cache_only = True
             print("BaoStock 登录失败，切换为仅使用本地缓存继续扫描。")
     else:
         lg = None
         if cache_only:
-            print("日线扫描模式：只使用本地 cache/hist，不请求 BaoStock。")
+            print(f"日线扫描模式：只使用本地 cache/hist（{workers}线程），不请求 BaoStock。")
         else:
-            print(f"日线扫描模式：未到 {DAILY_AUTO_UPDATE_AFTER_TIME}，使用本地 cache/hist，不请求 BaoStock。")
+            print(f"日线扫描模式：未到 {DAILY_AUTO_UPDATE_AFTER_TIME}，使用本地 cache/hist（{workers}线程）。")
 
+    do_update = force_update and not login_failed
     scan_start_time = time.time()
 
     try:
-        for scan_no, (_, row) in enumerate(stock_pool_df.iterrows(), start=1):
-            code = str(row["代码"]).zfill(6)
-            name = row["名称"]
+        # ================================================================
+        # 阶段1：单线程更新缓存（BaoStock 不支持并发）
+        # ================================================================
+        if allow_update and not login_failed:
+            print(f"\n阶段1：单线程更新日K缓存（共 {total} 只）...")
+            phase1_start = time.time()
+            for i, (_, row) in enumerate(stock_pool_df.iterrows(), start=1):
+                code = str(row["代码"]).zfill(6)
+                name = row["名称"]
+                try:
+                    get_hist_data_baostock(code, cache_only=False, force_update=do_update)
+                except Exception:
+                    pass
+                elapsed = time.time() - phase1_start
+                remaining = (total - i) * elapsed / i if i > 0 else 0
+                print(
+                    f"  缓存更新：{i}/{total} | {code} {name} | "
+                    f"预计剩余：{remaining / 60:.1f} 分钟",
+                    end="\r",
+                    flush=True,
+                )
+                time.sleep(0.03)
+            print()
+            print(f"  缓存更新完成，耗时 {time.time()-phase1_start:.1f} 秒")
 
-            is_hit, hit_strategy, info = check_main_rising_signal(
-                code,
-                cache_only=scan_cache_only,
-                force_update=force_update and not login_failed,
-            )
+        # ================================================================
+        # 阶段2：多线程从缓存扫描
+        # ================================================================
+        use_multithread = workers > 1
+        scan_cache_only = True  # 阶段2永远只读缓存
 
-            if is_hit:
-                result = row.to_dict()
-                result["命中策略"] = hit_strategy
+        if use_multithread:
+            print(f"\n阶段2：{workers}线程从缓存扫描...")
+            tasks = [
+                (str(row["代码"]).zfill(6), row.to_dict())
+                for _, row in stock_pool_df.iterrows()
+            ]
 
-                if info:
-                    result.update(info)
+            completed = 0
+            with ThreadPoolExecutor(max_workers=workers) as executor:
+                futures = {}
+                for code, meta in tasks:
+                    futures[
+                        executor.submit(check_main_rising_signal, code, True, False)
+                    ] = (code, meta)
 
-                result_list.append(result)
+                for future in as_completed(futures):
+                    code, meta = futures[future]
+                    completed += 1
+                    try:
+                        is_hit, hit_strategy, info = future.result()
+                    except Exception:
+                        is_hit, hit_strategy, info = False, "", None
 
-            elapsed_seconds = time.time() - scan_start_time
-            avg_seconds = elapsed_seconds / scan_no
-            remaining_count = total - scan_no
-            estimated_remaining_seconds = avg_seconds * remaining_count
+                    if is_hit:
+                        result = dict(meta)
+                        result["命中策略"] = hit_strategy
+                        if info:
+                            result.update(info)
+                        result_list.append(result)
 
-            print(
-                f"日线扫描进度：{scan_no}/{total} | "
-                f"当前：{code} {name} | "
-                f"命中数：{len(result_list)} | "
-                f"预计剩余：{estimated_remaining_seconds / 60:.2f} 分钟",
-                end="\r",
-                flush=True,
-            )
+                    if completed % 100 == 0 or completed == total:
+                        elapsed = time.time() - scan_start_time
+                        avg_s = elapsed / completed
+                        remaining = (total - completed) * avg_s
+                        print(
+                            f"  扫描进度：{completed}/{total} | "
+                            f"命中数：{len(result_list)} | "
+                            f"预计剩余：{remaining / 60:.1f} 分钟",
+                            flush=True,
+                        )
+        else:
+            # ---- 单线程模式 ----
+            print()
+            for scan_no, (_, row) in enumerate(stock_pool_df.iterrows(), start=1):
+                code = str(row["代码"]).zfill(6)
+                name = row["名称"]
 
-            # 只有真实请求 BaoStock 时才需要轻微限速；纯缓存扫描不 sleep。
-            if allow_update:
-                time.sleep(0.05)
+                is_hit, hit_strategy, info = check_main_rising_signal(
+                    code, cache_only=scan_cache_only, force_update=False,
+                )
 
-        print()
+                if is_hit:
+                    result = row.to_dict()
+                    result["命中策略"] = hit_strategy
+                    if info:
+                        result.update(info)
+                    result_list.append(result)
+
+                elapsed = time.time() - scan_start_time
+                remaining = (total - scan_no) * elapsed / scan_no
+                print(
+                    f"日线扫描进度：{scan_no}/{total} | "
+                    f"当前：{code} {name} | "
+                    f"命中数：{len(result_list)} | "
+                    f"预计剩余：{remaining / 60:.2f} 分钟",
+                    end="\r",
+                    flush=True,
+                )
+            print()
 
     finally:
         if allow_update:

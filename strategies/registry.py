@@ -18,6 +18,7 @@ from .daily_strategies import (
     # LongBuildWashBreakoutStrategy,
     
     VShapeReversalStrategy,
+    SecondWaveStrategy,
 )
 
 
@@ -47,6 +48,9 @@ def get_daily_strategies() -> list[BaseDailyStrategy]:
         # LongBuildWashBreakoutStrategy(),
 
         VShapeReversalStrategy(),
+
+        # 二波形态（含4个子条件：回调结构/MACD底背离/地量反弹/平台支撑）
+        SecondWaveStrategy(),
     ]
 
 

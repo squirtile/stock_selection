@@ -12,7 +12,8 @@
       "Bash(python -c ' *)",
       "Bash(rm -f \"D:\\\\Vscode\\\\股票\\\\stock_selection\\\\output\\\\ml_models\\\\global_scaler.pkl\")",
       "Bash(git checkout *)",
-      "Bash(rm -f \"D:/Vscode/股票/stock_selection/output/ml_models/global_scaler.pkl\")"
+      "Bash(rm -f \"D:/Vscode/股票/stock_selection/output/ml_models/global_scaler.pkl\")",
+      "Bash(python *)"
     ]
   }
 }
