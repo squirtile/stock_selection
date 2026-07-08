@@ -17,8 +17,10 @@ from .daily_strategies import (
 
     # LongBuildWashBreakoutStrategy,
     
-    VShapeReversalStrategy,
+    # VShapeReversalStrategy,
     SecondWaveStrategy,
+    AnnualLineBreakStrategy,
+    LimitUpPullbackDayTradeStrategy,
 )
 
 
@@ -47,10 +49,16 @@ def get_daily_strategies() -> list[BaseDailyStrategy]:
 
         # LongBuildWashBreakoutStrategy(),
 
-        VShapeReversalStrategy(),
+        # VShapeReversalStrategy(),
 
         # 二波形态（含4个子条件：回调结构/MACD底背离/地量反弹/平台支撑）
         SecondWaveStrategy(),
+
+        # 年线突破：触及250日线后上穿，连续2天站稳
+        AnnualLineBreakStrategy(),
+
+        # 涨停回调一日游：涨停→缩量回调→企稳→尾盘买明天卖
+        LimitUpPullbackDayTradeStrategy(),
     ]
 
 

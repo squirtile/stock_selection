@@ -26,6 +26,8 @@ from ml_engine.pattern_extract import (
     load_candidate_codes,
     try_load_stock_name_map,
     normalize_code,
+    extract_indicator_matrix,
+    _window_to_record,
 )
 from ml_engine.ml_classifier import MLPatternModel
 from ml_engine.similarity import rank_by_similarity, aggregate_stock_similarity
@@ -400,6 +402,178 @@ def match_single_stock_pattern(
     results["report_path"] = report_path
     print(f"\n报告已保存: {report_path}")
     return results
+
+
+def train_model_from_date_ranges(
+    stock_ranges: list[dict],
+    lookback: int = DEFAULT_LOOKBACK,
+    forward_horizon: int = 5,
+    target_pct: float = 5.0,
+    use_pca: bool = False,
+    validation_split: float = 0.2,
+    model_dir: str = "高胜率pkl",
+    supplement_negatives: bool = True,
+) -> tuple[MLPatternModel, dict]:
+    """多股票+各自时间段 → 提取形态 → 训练ML模型 → 生成.pkl
+
+    Args:
+        stock_ranges: [{"code": "600288", "date_start": "2026-06-20", "date_end": "2026-07-08"}, ...]
+        lookback: 窗口天数，默认20
+        forward_horizon: 预测未来N天，默认5
+        target_pct: 目标涨幅%，默认5.0
+        use_pca: 是否使用PCA降维
+        validation_split: 验证集比例
+        model_dir: 模型输出目录，默认"高胜率pkl"
+        supplement_negatives: 是否从其他股票补充负样本
+
+    Returns:
+        (model, stats_dict)
+    """
+    template_codes = []
+    all_template_windows = []
+
+    print("=" * 60)
+    print(f"Step 1/3: 提取 {len(stock_ranges)} 只模板股票的指定时间段形态")
+    print("=" * 60)
+
+    for item in stock_ranges:
+        code = normalize_code(item["code"])
+        date_start = item["date_start"]
+        date_end = item["date_end"]
+        template_codes.append(code)
+
+        templates = extract_template_windows(
+            [code], lookback=lookback, date_range=(date_start, date_end)
+        )
+        all_template_windows.extend(templates)
+        print(f"  {code} ({date_start} ~ {date_end}): 提取 {len(templates)} 个窗口")
+
+    if not all_template_windows:
+        raise RuntimeError("未能从任何指定时间段提取到有效窗口，请检查日期范围和缓存数据")
+
+    template_vectors = np.array([t["vector"] for t in all_template_windows], dtype=np.float64)
+    print(f"  合计: {len(all_template_windows)} 个模板窗口，向量维度: {template_vectors.shape[1]}")
+
+    print(f"\n{'=' * 60}")
+    print(f"Step 2/3: 构建训练集 & 训练 ML 模型")
+    print(f"{'=' * 60}")
+
+    t0 = time.time()
+
+    # 正样本：模板股票在指定时间段内的窗口
+    X_pos = template_vectors
+    y_pos = np.ones(len(X_pos), dtype=np.int32)
+
+    # 负样本：同一批模板股票在指定时间段之外的窗口 + 其他股票的窗口
+    X_neg_list, y_neg_list = [], []
+    if supplement_negatives:
+        # 从模板股票自身取负样本（指定时间段外的窗口）
+        for item in stock_ranges:
+            code = normalize_code(item["code"])
+            date_start = pd.Timestamp(item["date_start"])
+            date_end = pd.Timestamp(item["date_end"])
+            df = extract_indicator_matrix(code, min_rows=80)
+            if df.empty:
+                continue
+            for t in range(lookback - 1, len(df)):
+                d = df.iloc[t]["日期"]
+                if date_start <= d <= date_end:
+                    continue  # 跳过指定时间段（已作为正样本）
+                rec = _window_to_record(code, df, t, lookback, source="neg_self")
+                if rec is not None:
+                    X_neg_list.append(rec["vector"])
+                    y_neg_list.append(0)
+
+        # 从其他股票补充负样本
+        others = [c for c in list_cached_codes() if c not in set(template_codes)][:300]
+        print(f"  从 {len(others)} 只其他股票补充负样本...")
+        for code in others:
+            df = extract_indicator_matrix(code, min_rows=80)
+            if df.empty:
+                continue
+            # 每只股票随机取最多5个窗口作为负样本
+            indices = list(range(lookback - 1, len(df)))
+            if len(indices) > 5:
+                indices = sorted(np.random.choice(indices, 5, replace=False))
+            for t in indices:
+                rec = _window_to_record(code, df, t, lookback, source="neg_other")
+                if rec is not None:
+                    X_neg_list.append(rec["vector"])
+                    y_neg_list.append(0)
+
+    if X_neg_list:
+        X = np.vstack([X_pos, np.array(X_neg_list, dtype=np.float64)])
+        y = np.concatenate([y_pos, np.array(y_neg_list, dtype=np.int32)])
+    else:
+        X, y = X_pos, y_pos
+
+    # 平衡正负样本
+    n_pos = int(np.sum(y == 1))
+    n_neg = int(np.sum(y == 0))
+    if n_neg > n_pos * 3:
+        # 降采样负样本到正样本的3倍
+        neg_idx = np.where(y == 0)[0]
+        keep_neg = np.random.choice(neg_idx, n_pos * 3, replace=False)
+        pos_idx = np.where(y == 1)[0]
+        keep = np.sort(np.concatenate([pos_idx, keep_neg]))
+        X, y = X[keep], y[keep]
+
+    print(f"  训练集: {len(X)} 样本 (正:{int(np.sum(y==1))} 负:{int(np.sum(y==0))})")
+    print(f"  正样本比例: {np.mean(y):.1%}")
+
+    if len(X) < 20:
+        raise RuntimeError(f"训练样本不足：{len(X)}，请增加模板股票或扩大日期范围")
+
+    model = MLPatternModel(
+        lookback=lookback,
+        feature_cols=list(ML_INDICATOR_COLUMNS),
+        use_pca=use_pca,
+        n_components=min(50, max(2, X.shape[1] // 2)),
+    )
+    stats = model.fit(X, y, validation_split=validation_split)
+    model.template_codes = template_codes
+    model.forward_horizon = forward_horizon
+    model.target_pct = target_pct
+    model.train_time = pd.Timestamp.now().strftime("%Y-%m-%d %H:%M:%S")
+
+    # 保存模板日期范围信息
+    model.template_ranges = [
+        {"code": item["code"], "date_start": item["date_start"], "date_end": item["date_end"]}
+        for item in stock_ranges
+    ]
+
+    stats.update({
+        "template_codes": template_codes,
+        "template_ranges": model.template_ranges,
+        "n_template_windows": len(all_template_windows),
+        "lookback": lookback,
+        "forward_horizon": forward_horizon,
+        "target_pct": target_pct,
+        "train_time_seconds": round(time.time() - t0, 1),
+    })
+
+    print(f"\n{'=' * 60}")
+    print(f"Step 3/3: 保存模型")
+    print(f"{'=' * 60}")
+
+    os.makedirs(model_dir, exist_ok=True)
+    safe_codes = "_".join(template_codes[:4])
+    if len(template_codes) > 4:
+        safe_codes += f"_plus{len(template_codes) - 4}"
+    target_str = str(target_pct).replace(".", "p")
+    ts = pd.Timestamp.now().strftime("%Y%m%d_%H%M%S")
+    model_name = f"multi_range_{safe_codes}_lb{lookback}_h{forward_horizon}_t{target_str}_{ts}.pkl"
+    model_path = os.path.join(model_dir, model_name)
+
+    model.save(model_path)
+    stats["model_path"] = model_path
+    print(f"  模型已保存: {model_path}")
+
+    if "validation" in stats:
+        v = stats["validation"]
+        print(f"  验证集: Acc={v['accuracy']:.3f} Prec={v['precision']:.3f} Recall={v['recall']:.3f} F1={v['f1']:.3f} AUC={v['auc_roc']:.3f}")
+
+    return model, stats
 
 
 def run_ml_pipeline(

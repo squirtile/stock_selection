@@ -17,11 +17,17 @@
 
 import pandas as pd
 import numpy as np
+import os
 from itertools import product
 from collections import Counter
 
+# ── 路径 ──
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+DATA_FILE = os.path.join(BASE_DIR, '福彩3D历史开奖数据.csv')
+OUTPUT_FILE = os.path.join(BASE_DIR, '高概率号码_组合过滤.csv')
+
 # ── 加载 ──
-df = pd.read_csv(r'd:\Vscode\股票\stock_selection\fc3d\福彩3D历史开奖数据.csv')
+df = pd.read_csv(DATA_FILE)
 df['日期'] = pd.to_datetime(df['开奖日期'])
 df['三位数值'] = df['百位'] * 100 + df['十位'] * 10 + df['个位']
 n = len(df)
@@ -289,6 +295,6 @@ print("""
 
 # ── 输出高评分号码列表 ──
 high_score = all_nums.head(160)[['号码', '形态', '和值', '跨度', '奇偶比', '大小比', '质合比', '联合概率评分']]
-high_score.to_csv(r'd:\Vscode\股票\stock_selection\fc3d\高概率号码_组合过滤.csv', 
+high_score.to_csv(OUTPUT_FILE, 
                   index=False, encoding='utf-8-sig')
 print(f"  高评分号码列表已保存: fc3d/高概率号码_组合过滤.csv")

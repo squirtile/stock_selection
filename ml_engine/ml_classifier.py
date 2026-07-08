@@ -7,6 +7,7 @@ will be followed by >= target_pct return within forward_horizon days.
 
 import os
 import sys
+import warnings
 
 import numpy as np
 import pandas as pd
@@ -22,6 +23,11 @@ from sklearn.metrics import (
     roc_auc_score,
     confusion_matrix,
 )
+
+# sklearn >= 1.2 的 StandardScaler 在 DataFrame 输入时 transform 可能返回 DataFrame，
+# 导致 LightGBM 特征名不一致警告。这是 sklearn/LightGBM 之间的已知兼容性问题，
+# 不影响模型精度，直接静默处理。
+warnings.filterwarnings("ignore", message="X does not have valid feature names")
 
 try:
     import joblib
@@ -129,9 +135,9 @@ class MLPatternModel:
 
         # Keep the transformed values as numpy arrays so both LightGBM and
         # older sklearn estimators (e.g. RandomForest) receive the same input shape.
-        X_train_scaled = np.asarray(X_train_scaled, dtype=np.float64)
+        X_train_scaled = np.asarray(X_train_scaled, dtype=np.float64).copy()
         if X_val is not None:
-            X_val_scaled = self._transform(X_val)
+            X_val_scaled = np.asarray(self._transform(X_val), dtype=np.float64).copy()
         else:
             X_val_scaled = None
 
@@ -149,11 +155,12 @@ class MLPatternModel:
             n_jobs=-1,
             verbose=-1,
         )
-        self.model.fit(X_train_scaled, y_train)
+        # 强制纯 numpy 数组，避免 DataFrame 特征名不一致警告
+        self.model.fit(np.ascontiguousarray(X_train_scaled), y_train)
         self._fitted = True
 
         # Train-set score
-        stats["train_accuracy"] = float(self.model.score(X_train_scaled, y_train))
+        stats["train_accuracy"] = float(self.model.score(np.ascontiguousarray(X_train_scaled), y_train))
 
         # Validation
         if X_val_scaled is not None:
@@ -163,17 +170,19 @@ class MLPatternModel:
         return stats
 
     def _transform(self, X: np.ndarray) -> np.ndarray:
-        """Apply scaler and PCA to input features and return a numpy array."""
+        """Apply scaler and PCA to input features and return a pure numpy array."""
         if self.scaler is None:
             raise RuntimeError("Model not fitted; call fit() first.")
-        X_scaled = self.scaler.transform(X)
+        X_arr = np.asarray(X, dtype=np.float64)
+        X_scaled = self.scaler.transform(X_arr)
         if self.pca is not None:
             X_scaled = self.pca.transform(X_scaled)
-        return np.asarray(X_scaled, dtype=np.float64)
+        return np.ascontiguousarray(X_scaled, dtype=np.float64)
 
     def _evaluate(self, X: np.ndarray, y: np.ndarray) -> dict:
         """Compute validation metrics."""
         X_t = self._transform(X)
+        X_t = np.ascontiguousarray(X_t, dtype=np.float64)
         y_pred = self.model.predict(X_t)
         y_proba = self.model.predict_proba(X_t)[:, 1]
 
@@ -193,10 +202,11 @@ class MLPatternModel:
             "false_negatives": int(fn),
         }
 
-    def _evaluate_df(self, X_df: pd.DataFrame, y: np.ndarray) -> dict:
-        """Compute validation metrics from DataFrame."""
-        y_pred = self.model.predict(X_df)
-        y_proba = self.model.predict_proba(X_df)[:, 1]
+    def _evaluate_df(self, X_df, y: np.ndarray) -> dict:
+        """Compute validation metrics. Accepts numpy array or DataFrame."""
+        X_arr = np.asarray(X_df, dtype=np.float64)
+        y_pred = self.model.predict(X_arr)
+        y_proba = self.model.predict_proba(X_arr)[:, 1]
 
         tn, fp, fn, tp = confusion_matrix(y, y_pred).ravel()
         precision = tp / (tp + fp) if (tp + fp) > 0 else 0.0
@@ -223,10 +233,11 @@ class MLPatternModel:
         """
         if not self._fitted or self.model is None:
             raise RuntimeError("Model not fitted.")
-        single = X.ndim == 1
+        X_arr = np.asarray(X, dtype=np.float64)
+        single = X_arr.ndim == 1
         if single:
-            X = X.reshape(1, -1)
-        X_t = self._transform(X)
+            X_arr = X_arr.reshape(1, -1)
+        X_t = self._transform(X_arr)
         proba = self.model.predict_proba(X_t)[:, 1]
         if single:
             return float(proba[0])

@@ -897,9 +897,10 @@ class SecondWaveStrategy(BaseDailyStrategy):
     # ------------------------------------------------------------------
     @staticmethod
     def _check_pullback_structure(row: pd.Series) -> tuple[bool, str]:
-        """第一波涨幅够 + 回调充分且阶梯式 + 缩量 + 均线企稳"""
+        """第一波涨幅够 + 回调充分且阶梯式 + 缩量企稳 + 今日启动"""
         fields = [
-            "收盘", "涨跌幅", "成交量",
+            "收盘", "涨跌幅", "成交量", "开盘",
+            "近5日平均成交量", "近5日最高收盘",
             "SMA5", "SMA10", "SMA20", "SMA60",
             "过去20日平均成交量",
             "第一波涨幅", "从高点回调幅度", "距前高空间",
@@ -910,16 +911,17 @@ class SecondWaveStrategy(BaseDailyStrategy):
                 return False, "字段缺失"
 
         close  = float(row["收盘"])
+        open_  = float(row["开盘"])
         pct    = float(row["涨跌幅"])
         vol    = float(row["成交量"])
-        avg20  = float(row["过去20日平均成交量"])
+        vol5   = float(row["近5日平均成交量"])
         ma5    = float(row["SMA5"])
         ma20   = float(row["SMA20"])
         ma60   = float(row["SMA60"])
 
-        wave   = float(row["第一波涨幅"])         # 正
-        dd     = float(row["从高点回调幅度"])      # 负
-        room   = float(row["距前高空间"])          # 正
+        wave   = float(row["第一波涨幅"])
+        dd     = float(row["从高点回调幅度"])
+        room   = float(row["距前高空间"])
         shrink = float(row["缩量比5日"])
         ma5_d  = float(row["MA5趋势"])
         stair  = bool(row["阶梯式回调"])
@@ -927,46 +929,55 @@ class SecondWaveStrategy(BaseDailyStrategy):
         if close <= 0 or ma20 <= 0 or ma60 <= 0:
             return False, "价格或均线异常"
 
-        # ① 第一波涨幅 >= 30%
-        if wave < 0.30:
+        # ① 第一波涨幅 >= 20%（放宽，与数据计算阈值一致）
+        if wave < 0.20:
             return False, f"第一波涨幅不足({wave*100:.0f}%)"
 
-        # ② 回调 15%~45%（第一波涨超100%的允许最深回调55%）
-        max_dd = 0.55 if wave >= 1.0 else 0.45
+        # ② 回调 15%~55%（放宽深回调容忍度，允许更深的洗盘）
+        max_dd = 0.55
         if dd > -0.15:
             return False, f"回调不足({dd*100:.0f}%)"
         if dd < -max_dd:
             return False, f"回调过深({dd*100:.0f}%)"
 
-        # ③ 中期均线未破位
-        if close < ma60 * 0.92:
+        # ③ 中期均线未破位（放宽MA60条件，允许轻微跌破）
+        if close < ma60 * 0.85:
             return False, "跌破MA60"
-        if ma20 < ma60 * 0.95:
+        if ma20 < ma60 * 0.90:
             return False, "MA20明显低于MA60"
 
-        # ④ 缩量：近期量 <= 前波峰量50%
-        if shrink > 0.50:
+        # ④ 缩量：近期量 <= 前波峰量80%（放宽，允许温和放量）
+        if shrink > 0.80:
             return False, f"未缩量(比{shrink*100:.0f}%)"
 
         # ⑤ 阶梯式回调（非直线崩盘）
         if not stair:
             return False, "非阶梯式回调"
 
-        # ⑥ 企稳：收盘站上MA5，MA5不再加速下行（允许轻微下行接近走平）
-        if close < ma5:
+        # ⑥ 企稳：收盘站上MA5，MA5不再加速下行（放宽MA5条件）
+        if close < ma5 * 0.98:
             return False, "未站上MA5"
-        if ma5_d < -0.035 * close:
+        if ma5_d < -0.05 * close:
             return False, "MA5仍在下行"
 
-        # ⑦ 距前高还有空间
-        if room < 0.08:
+        # ⑦ 距前高还有空间（放宽到5%）
+        if room < 0.05:
             return False, "距前高太近"
 
-        # ⑧ 当天温和量能，不追涨停（放宽量比：回调末端允许温和量）
-        if pct >= 9.5:
-            return False, "接近涨停"
-        if vol < avg20 * 0.50:
-            return False, "量能不足"
+        # ⑧ ★ 二波启动：回调到位 + 今天放量启动
+        # ⑧a 温和启动 0.5%~9.5%（放宽下限，允许小阳启动）
+        if pct < 0.5 or pct >= 9.5:
+            return False, f"涨幅不匹配({pct*100:.1f}%)"
+        # ⑧b 阳线
+        if close <= open_:
+            return False, "非阳线"
+        # ⑧c 放量启动：今日量 > 近5日均量 × 1.2（放宽，允许温和放量）
+        if vol < vol5 * 1.2:
+            return False, f"未放量(量比{vol/vol5:.1f})"
+        # ⑧d 突破近期整理平台：收盘 > 近5日最高收盘的95%（放宽）
+        if "近5日最高收盘" in row.index and not pd.isna(row["近5日最高收盘"]):
+            if close < float(row["近5日最高收盘"]) * 0.95:
+                return False, "未接近近期高点"
 
         return True, "✓"
 
@@ -1139,3 +1150,133 @@ class SecondWaveStrategy(BaseDailyStrategy):
 
         except Exception:
             return None
+
+
+# ======================================================================================
+# 年线突破策略（收紧版）
+# 逻辑：股价在年线下方运行一段时间 → 触及年线 → 放量上穿 → 连续2天站稳。
+# 过滤掉"蹭一下年线就下来"和"早已远离年线"的情况。
+# ======================================================================================
+
+class AnnualLineBreakStrategy(BaseDailyStrategy):
+    """
+    年线突破：年线下方运行 → 放量突破 → 连续2天站稳 → 年线趋势向上。
+
+    条件（全部满足才命中）：
+    1. 近5日内最低价曾触及年线（真正的"回踩"或"突破"动作）
+    2. 今日收盘 > SMA250 且 昨日收盘 > SMA250（连续2天站稳）
+    3. SMA250趋势向上（年线在抬高，不是下降中继）
+    4. 收盘不超年线5%（突破初期，还没跑远）
+    5. 今日涨幅 1%~9.5%（温和放量突破，不追涨停）
+    6. 成交量 > 20日均量 × 1.2（放量突破）
+    7. 收盘 > SMA5（短均线支撑确认）
+    8. 今日为阳线
+    """
+
+    name = "年线突破"
+    category = "主升"
+
+    def match(self, row: pd.Series) -> bool:
+        fields = [
+            "收盘", "开盘", "最低", "涨跌幅", "成交量",
+            "SMA250", "昨日SMA250", "SMA250趋势",
+            "昨日收盘", "SMA5",
+            "近5日触及年线", "过去20日平均成交量",
+        ]
+        for c in fields:
+            if c not in row.index or pd.isna(row[c]):
+                return False
+
+        close        = float(row["收盘"])
+        open_        = float(row["开盘"])
+        pct          = float(row["涨跌幅"])
+        vol          = float(row["成交量"])
+        sma250       = float(row["SMA250"])
+        sma250_yest  = float(row["昨日SMA250"])
+        sma250_trend = float(row["SMA250趋势"])
+        close_yest   = float(row["昨日收盘"])
+        ma5          = float(row["SMA5"])
+        avg20        = float(row["过去20日平均成交量"])
+        touched      = bool(row["近5日触及年线"])
+
+        # ① 近5日内曾触及年线（真正的"碰线"动作）
+        if not touched:
+            return False
+
+        # ② 连续2天收盘在年线上方
+        if close <= sma250:
+            return False
+        if close_yest <= sma250_yest:
+            return False
+
+        # ③ 年线趋势向上（下降趋势中的突破多为假突破）
+        if sma250_trend <= 0:
+            return False
+
+        # ④ 收盘不超年线5%（已经跑远的不是"刚突破"）
+        if close > sma250 * 1.05:
+            return False
+
+        # ⑤ 温和放量突破：涨幅 1%~9.5%
+        if pct < 1.0 or pct >= 9.5:
+            return False
+
+        # ⑥ 放量突破：成交量 > 20日均量 × 1.2
+        if vol < avg20 * 1.2:
+            return False
+
+        # ⑦ 短均线确认：收盘 > SMA5
+        if close <= ma5:
+            return False
+
+        # ⑧ 阳线
+        if close <= open_:
+            return False
+
+        return True
+
+
+# ======================================================================================
+# 涨停回调一日游策略
+#
+# 核心逻辑：
+#   近2~5天有放量涨停 → 缩量回调不破5日线 → 今天小实体企稳
+#   → 尾盘买入，明天冲高卖出（超短线一日游）
+#
+# 适用场景：强势股首板后的N型反包，利用涨停后获利盘回吐的低吸机会
+# ======================================================================================
+
+class LimitUpPullbackDayTradeStrategy(BaseDailyStrategy):
+    """
+    涨停回调一日游：涨停→缩量回调→企稳支撑→尾盘买明天卖。
+
+    条件（全部满足才命中）：
+    1. 2~5天前出现过放量涨停（涨幅≥9.5%，量>20日均量×1.5）
+    2. 从涨停收盘价回调 2%~8%（必须回调但不崩盘）
+    3. 回调期间缩量至涨停日量的60%以下（抛压衰竭）
+    4. 回调不破涨停日最低价（有序回调，没把涨幅全吐回去）
+    5. 今天小实体企稳（振幅<6%）
+    6. 今天不跳水——收盘高于最低价1.5%以上（有下影线）
+    7. 今天温和——不是大涨也不是大跌（-4% < 涨幅 < 9.5%）
+    """
+
+    name = "涨停回调一日游"
+    category = "主升"
+
+    def match(self, row: pd.Series) -> bool:
+        need_cols = [
+            "近5日是否有涨停",
+            "涨停距今天数",
+            "涨停后缩量企稳",
+            "涨跌幅",
+        ]
+        for col in need_cols:
+            if col not in row.index or pd.isna(row[col]):
+                return False
+
+        return bool(
+            row["近5日是否有涨停"]
+            and 2 <= row["涨停距今天数"] <= 5
+            and row["涨停后缩量企稳"]
+            and -4.0 < row["涨跌幅"] < 9.5
+        )

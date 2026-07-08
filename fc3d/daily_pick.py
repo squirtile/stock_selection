@@ -2,25 +2,35 @@
 福彩3D 每日推荐脚本
 ====================
 策略: 组六 + 和值[7,20] + 跨度[4,7] + 奇偶不全同
-基础候选: 384个号码 (命中率 ~39%)
-每日精选: 从候选中挑最近最热的1个 (2元一注)
+基础候选: 348个号码 (命中率 ~35%)
+每日精选: 从候选中按热度加权随机抽取 (每次运行结果不同)
 """
 
 import pandas as pd
 import numpy as np
+import os
 from itertools import product
 from datetime import datetime, timedelta
+
+# ── 路径 ──
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+DATA_FILE = os.path.join(BASE_DIR, '福彩3D历史开奖数据.csv')
+OUTPUT_FILE = os.path.join(BASE_DIR, '每日推荐.csv')
+
+# ── 固定随机种子按日期变化: 同一天多次运行结果相同, 不同天结果不同 ──
+today_str = datetime.now().strftime('%Y%m%d')
+np.random.seed(int(today_str) + 42)
 
 # ═══════════════════════════════════════════
 # 1. 加载历史数据
 # ═══════════════════════════════════════════
-df = pd.read_csv(r'd:\Vscode\股票\stock_selection\fc3d\福彩3D历史开奖数据.csv')
+df = pd.read_csv(DATA_FILE)
 df['日期'] = pd.to_datetime(df['开奖日期'])
 df['num'] = df['百位'].astype(int)*100 + df['十位'].astype(int)*10 + df['个位'].astype(int)
 df = df.sort_values('日期').reset_index(drop=True)
 
 # ═══════════════════════════════════════════
-# 2. 生成384个候选号码
+# 2. 生成候选号码
 # ═══════════════════════════════════════════
 candidates = []
 for b, s, g in product(range(10), repeat=3):
@@ -29,16 +39,12 @@ for b, s, g in product(range(10), repeat=3):
     sp = max(b, s, g) - min(b, s, g)
     od = b%2 + s%2 + g%2
     
-    # 组六判断
     if b == s or s == g or b == g:
-        continue  # 不是组六
-    # 和值 [7, 20]
+        continue
     if not (7 <= he <= 20):
         continue
-    # 跨度 [4, 7]
     if not (4 <= sp <= 7):
         continue
-    # 奇偶不全同 (不是 0或3)
     if od == 0 or od == 3:
         continue
     
@@ -49,60 +55,75 @@ print(f"基础候选: {len(candidates)} 个号码")
 print(f"历史命中率: {df['num'].isin(cand_set).mean()*100:.1f}%")
 
 # ═══════════════════════════════════════════
-# 3. 从候选中选今日最热的1个
+# 3. 热度加权随机抽取
 # ═══════════════════════════════════════════
 
-# 最近N期内候选中各号码的出现频率
-LOOKBACK = 200  # 看最近200期
+LOOKBACK = 200
 
 recent = df.tail(LOOKBACK)
-# 只统计候选中的号码
-hot_in_candidates = recent[recent['num'].isin(cand_set)]['num'].value_counts()
+hot_counts = recent[recent['num'].isin(cand_set)]['num'].value_counts()
 
-print(f"\n最近{LOOKBACK}期内，384候选中最热的10个:")
-for num, cnt in hot_in_candidates.head(10).items():
+# 构建加权池: 每个候选号的权重 = 出现次数 + 1 (没出现过的也有机会)
+weights = np.zeros(len(candidates))
+for i, num in enumerate(candidates):
+    weights[i] = hot_counts.get(num, 0) + 1  # +1 确保冷号也有概率
+
+# 归一化
+weights = weights / weights.sum()
+
+# 加权随机抽取
+num_picks = 5
+picked_indices = np.random.choice(len(candidates), size=num_picks, replace=False, p=weights)
+picked_nums = [candidates[i] for i in picked_indices]
+
+# 显示热度排名 (供参考)
+print(f"\n最近{LOOKBACK}期内，候选中最热的10个 (仅供参考):")
+for num, cnt in hot_counts.head(10).items():
     b, s, g = num//100, (num//10)%10, num%10
     he = b + s + g
     sp = max(b,s,g) - min(b,s,g)
     od = b%2 + s%2 + g%2
-    print(f"  {num:03d} ({b}{s}{g})  出现{cnt}次  和值{he} 跨度{sp} 奇偶{3-od}:{od}")
+    weight_pct = weights[candidates.index(num)] * 100
+    print(f"  {num:03d} ({b}{s}{g})  出现{cnt}次  权重{weight_pct:.1f}%  和值{he} 跨度{sp} 奇偶{3-od}:{od}")
 
-# 今日推荐: 最热的一个
-today_pick = hot_in_candidates.index[0] if len(hot_in_candidates) > 0 else candidates[0]
+# ═══════════════════════════════════════════
+# 4. 今日推荐 (加权随机)
+# ═══════════════════════════════════════════
+print(f"\n{'='*55}")
+print(f"  🎲 随机加权抽选 (每天结果不同)")
+print(f"  {'='*55}")
+
+for rank, num in enumerate(picked_nums, 1):
+    cnt = hot_counts.get(num, 0)
+    b, s, g = num//100, (num//10)%10, num%10
+    he = b + s + g
+    sp = max(b,s,g) - min(b,s,g)
+    marker = " ⭐主推" if rank == 1 else ""
+    print(f"  {rank}. {num:03d} ({b}{s}{g})  出现{cnt}次  和值{he} 跨度{sp}{marker}")
+
+today_pick = picked_nums[0]
 b, s, g = today_pick//100, (today_pick//10)%10, today_pick%10
 
-print(f"\n{'='*50}")
-print(f"  🎯 今日推荐 (2元一注)")
-print(f"  {'='*50}")
-print(f"  号码: {today_pick:03d}")
-print(f"  百位: {b}  十位: {s}  个位: {g}")
-print(f"  和值: {b+s+g}  跨度: {max(b,s,g)-min(b,s,g)}")
-print(f"  最近{LOOKBACK}期出现: {hot_in_candidates.iloc[0]} 次")
-print(f"  {'='*50}")
-
-# ═══════════════════════════════════════════
-# 4. 如果想多买几注
-# ═══════════════════════════════════════════
-print(f"\n💡 如果想多买:")
-print(f"  买Top5热门: {hot_in_candidates.head(5).index.tolist()} (10元)")
-print(f"  买全部384个: 768元/期 (命中率 ~39%)")
-print(f"\n⚠️ 提醒: 这只是统计游戏，彩票期望为负。理性购彩。")
+print(f"\n  💡 Top5 一起买 (10元): {[f'{n:03d}' for n in picked_nums]}")
+print(f"  💡 买全部{len(candidates)}个: {len(candidates)*2}元/期 (命中率 ~35%)")
+print(f"\n  ⚠️ 提醒: 随机≠策略优势，彩票期望为负。理性购彩。")
 
 # ═══════════════════════════════════════════
 # 5. 保存推荐
 # ═══════════════════════════════════════════
-today_str = datetime.now().strftime('%Y-%m-%d')
+output_date = datetime.now().strftime('%Y-%m-%d')
 output = {
-    '日期': today_str,
+    '日期': output_date,
     '推荐号码': f'{today_pick:03d}',
     '百位': b, '十位': s, '个位': g,
-    '策略': '组六+和值7-20+跨度4-7+奇偶不全同→选最热',
+    'Top5': ','.join([f'{n:03d}' for n in picked_nums]),
+    '策略': '组六+和值7-20+跨度4-7+奇偶不全同→热度加权随机',
     '候选总数': len(candidates),
     '命中率': f"{df['num'].isin(cand_set).mean()*100:.1f}%",
 }
 pd.DataFrame([output]).to_csv(
-    r'd:\Vscode\股票\stock_selection\fc3d\每日推荐.csv',
+    OUTPUT_FILE,
     index=False, encoding='utf-8-sig', mode='a',
-    header=not pd.io.common.file_exists(r'd:\Vscode\股票\stock_selection\fc3d\每日推荐.csv')
+    header=not os.path.exists(OUTPUT_FILE)
 )
 print(f"\n已追加到 fc3d/每日推荐.csv")

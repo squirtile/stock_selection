@@ -43,6 +43,22 @@ python realtime_strategy.py                 # 实时盘中扫描
 python cli/ml_match.py --code 000009 --date-start 2024-03-01 --date-end 2024-03-20
 ```
 
+### 路线A2: 多股票多时间段 → 生成pkl模型 🆕
+
+```bash
+# 最常用：朋友选的票 + 选股日期 → 自动生成策略pkl
+python cli/ml_match_multi.py --codes 600288,000938,002350 --pick-date 2026-07-08 --lookback-days 20
+
+# 完整流水线（训练+扫描+回测）
+python cli/ml_match_multi.py --codes 600288,000938,002350 --pick-date 2026-07-08 --full-pipeline
+
+# 每只票不同时间段
+python cli/ml_match_multi.py --stocks "600288:2026-06-20:2026-07-08,000938:2026-06-15:2026-07-08"
+
+# 输出到指定目录
+python cli/ml_match_multi.py --codes 600288,000938,002350 --pick-date 2026-07-08 --output-dir 高胜率pkl
+```
+
 ```python
 from ml_engine.runner import match_single_stock_pattern
 result = match_single_stock_pattern(

@@ -1,11 +1,16 @@
 """快速搜索密度最大策略"""
 import pandas as pd, numpy as np
+import os
 from itertools import product
 import time
 
 t0 = time.time()
 
-df = pd.read_csv(r'd:\Vscode\股票\stock_selection\fc3d\福彩3D历史开奖数据.csv')
+# ── 路径 ──
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+DATA_FILE = os.path.join(BASE_DIR, '福彩3D历史开奖数据.csv')
+
+df = pd.read_csv(DATA_FILE)
 df['num'] = df['百位'].astype(int)*100 + df['十位'].astype(int)*10 + df['个位'].astype(int)
 df = df.sort_values('开奖日期').reset_index(drop=True)
 n = len(df)

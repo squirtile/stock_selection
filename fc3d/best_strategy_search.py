@@ -14,13 +14,18 @@
 
 import pandas as pd
 import numpy as np
+import os
 from itertools import product
 from collections import Counter
 import warnings
 warnings.filterwarnings('ignore')
 
+# ── 路径 ──
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+DATA_FILE = os.path.join(BASE_DIR, '福彩3D历史开奖数据.csv')
+
 # ── 加载 ──
-df = pd.read_csv(r'd:\Vscode\股票\stock_selection\fc3d\福彩3D历史开奖数据.csv')
+df = pd.read_csv(DATA_FILE)
 df['日期'] = pd.to_datetime(df['开奖日期'])
 df = df.sort_values('日期').reset_index(drop=True)
 

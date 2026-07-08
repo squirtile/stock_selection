@@ -6,6 +6,7 @@ import warnings
 from datetime import datetime, timedelta
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
+import numpy as np
 import pandas as pd
 import baostock as bs
 
@@ -331,6 +332,21 @@ def prepare_hist_data(df: pd.DataFrame) -> pd.DataFrame:
     df["SMA10"] = df["收盘"].rolling(10).mean()
     df["SMA20"] = df["收盘"].rolling(20).mean()
     df["SMA60"] = df["收盘"].rolling(60).mean()
+    df["SMA250"] = df["收盘"].rolling(250, min_periods=120).mean()
+
+    # ---- 年线突破策略辅助字段 ----
+    df["昨日收盘"] = df["收盘"].shift(1)
+    df["前日收盘"] = df["收盘"].shift(2)
+    df["昨日SMA250"] = df["SMA250"].shift(1)
+    df["前日SMA250"] = df["SMA250"].shift(2)
+    # SMA250趋势：>0 表示年线向上
+    df["SMA250_5日前"] = df["SMA250"].shift(5)
+    df["SMA250趋势"] = df["SMA250"] - df["SMA250_5日前"]
+    # 近5日内是否曾触及年线（最低价曾 <= SMA250）
+    df["近5日最低价"] = df["最低"].rolling(5).min()
+    df["近5日触及年线"] = (
+        df["最低"].shift(1).rolling(5).min() <= df["SMA250"].shift(1).rolling(5).max()
+    )
 
     # 过去60个交易日最高价，不含今日
     df["过去60日最高价"] = df["最高"].shift(1).rolling(60).max()
@@ -546,23 +562,225 @@ def prepare_hist_data(df: pd.DataFrame) -> pd.DataFrame:
         df.iat[pos, df.columns.get_loc("当前不破10日线")] = current_no_break_ma10
 
     # =====================================================================
-    # 二波形态策略辅助字段
+    # 涨停回调一日游策略辅助字段
+    #
+    # 核心逻辑：近2~5天有涨停 → 缩量回调 → 今天企稳在支撑位
+    # → 尾盘买入，明天卖出（超短线一日游）
+    # =====================================================================
+    df["近5日是否有涨停"] = False
+    df["涨停距今天数"] = pd.NA
+    df["涨停日收盘"] = pd.NA
+    df["涨停日成交量"] = pd.NA
+    df["涨停日最低价"] = pd.NA
+    df["涨停后缩量企稳"] = False
+
+    limit_up_positions_all = df.index[(df["涨跌幅"] >= 9.5).fillna(False)].tolist()
+
+    for pos in range(len(df)):
+        # 只在 2~5 天前找涨停
+        candidate_positions = [p for p in limit_up_positions_all if 2 <= pos - p <= 5]
+        if not candidate_positions:
+            continue
+
+        # 取最近一次涨停
+        limit_pos = candidate_positions[-1]
+        days_since = pos - limit_pos
+
+        limit_row = df.iloc[limit_pos]
+        current_row = df.iloc[pos]
+
+        limit_close = limit_row["收盘"]
+        limit_vol = limit_row["成交量"]
+        limit_low = limit_row["最低"]
+        current_close = current_row["收盘"]
+        current_open = current_row["开盘"]
+        current_high = current_row["最高"]
+        current_low = current_row["最低"]
+        current_pct = current_row["涨跌幅"]
+
+        if pd.isna(limit_close) or limit_close <= 0:
+            continue
+
+        # ---- 条件1：涨停日必须是放量的（真涨停，不是尾盘偷袭）----
+        avg_vol20_limit = limit_row["过去20日平均成交量"]
+        if pd.isna(avg_vol20_limit) or avg_vol20_limit <= 0:
+            continue
+        if limit_vol < avg_vol20_limit * 1.5:
+            continue
+
+        # ---- 条件2：回调幅度 2%~8%（必须回调，不能太浅也不能崩盘）----
+        pullback_pct = current_close / limit_close - 1
+        if pullback_pct > -0.02 or pullback_pct < -0.08:
+            continue
+
+        # ---- 条件3：缩量——近2日均量 < 涨停日量的60% ----
+        pullback_slice_data = df.iloc[limit_pos + 1:pos + 1]
+        if len(pullback_slice_data) < 2:
+            continue
+        recent_2_vol = pullback_slice_data["成交量"].tail(2).mean()
+        if pd.isna(recent_2_vol) or recent_2_vol <= 0:
+            continue
+        if recent_2_vol >= limit_vol * 0.60:
+            continue
+
+        # ---- 条件4：回调有序——不破涨停日最低价（没把涨停全吐回去）----
+        pullback_low = pullback_slice_data["最低"].min()
+        if pd.isna(pullback_low) or pd.isna(limit_low):
+            continue
+        if pullback_low < limit_low * 0.98:
+            continue
+
+        # ---- 条件5：今天企稳——小实体，振幅 < 6% ----
+        if pd.isna(current_open) or current_open <= 0:
+            continue
+        body_range = (current_high - current_low) / current_open
+        if abs(body_range) >= 0.06:
+            continue
+
+        # ---- 条件6：今天不跳水——收盘不在最低价，有下影线企稳 ----
+        if pd.isna(current_low) or current_low <= 0:
+            continue
+        if current_close < current_low * 1.015:
+            continue
+
+        # ---- 条件7：今天温和——不是大涨也不是大跌（-4% < 涨幅 < 9.5%）----
+        if pd.isna(current_pct):
+            continue
+        if current_pct <= -4.0 or current_pct >= 9.5:
+            continue
+
+        # ---- 汇总 ----
+        df.iat[pos, df.columns.get_loc("近5日是否有涨停")] = True
+        df.iat[pos, df.columns.get_loc("涨停距今天数")] = days_since
+        df.iat[pos, df.columns.get_loc("涨停日收盘")] = limit_close
+        df.iat[pos, df.columns.get_loc("涨停日成交量")] = limit_vol
+        df.iat[pos, df.columns.get_loc("涨停日最低价")] = limit_low
+        df.iat[pos, df.columns.get_loc("涨停后缩量企稳")] = True
+
+    # =====================================================================
+    # 二波形态策略辅助字段（改进版）
     # 样本：天创时尚603608、福达合金、黄河旋风600172
+    #
+    # 核心思路：先找到"第一波峰值"（距今15~80天内、之前有30%+涨幅的
+    # 趋势高点），再基于这个真实峰值计算回调幅度、缩量比、阶梯特征。
     # =====================================================================
 
-    # ---- 120日维度：识别完整的第一波 ----
-    df["近120日最高收盘"] = df["收盘"].rolling(120, min_periods=60).max()
-    df["近120日最低收盘"] = df["收盘"].rolling(120, min_periods=60).min()
-    df["第一波涨幅"] = df["近120日最高收盘"] / df["近120日最低收盘"] - 1
-    df["从高点回调幅度"] = df["收盘"] / df["近120日最高收盘"] - 1   # 负值=已回调
-    df["距前高空间"] = 1 - df["收盘"] / df["近120日最高收盘"]       # 正值=还有空间
+    # 二波启动检测需要的辅助字段
+    df["昨日最高"] = df["最高"].shift(1)
+    df["近5日最高收盘"] = df["收盘"].shift(1).rolling(5).max()
 
-    # ---- 成交量维度：缩量判断 ----
-    df["近60日最大量"] = df["成交量"].rolling(60, min_periods=40).max()
-    df["近5日均量"] = df["成交量"].rolling(5, min_periods=3).mean()
-    df["近10日均量"] = df["成交量"].rolling(10, min_periods=5).mean()
-    df["缩量比5日"] = df["近5日均量"] / df["近60日最大量"]   # 越小越缩量
-    df["缩量比10日"] = df["近10日均量"] / df["近60日最大量"]
+    close_arr = df["收盘"].values
+    ma5_arr = df["SMA5"].values
+    ma20_arr = df["SMA20"].values
+    vol_arr = df["成交量"].values
+    pct_arr = df["涨跌幅"].values
+
+    n = len(df)
+    wave_peak_prices    = np.full(n, np.nan)
+    wave_peak_positions = np.full(n, -1, dtype=int)   # 距离当前的天数
+    wave_base_prices    = np.full(n, np.nan)
+    wave_gains          = np.full(n, np.nan)            # 第一波真实涨幅
+    pullback_ratios     = np.full(n, np.nan)            # 从峰值回调幅度(负值)
+    room_to_peak        = np.full(n, np.nan)            # 距峰值空间(正值)
+    stair_counts        = np.full(n, 0, dtype=int)      # 回调期反弹阳线次数
+    wave_vol_avgs       = np.full(n, np.nan)            # 第一波期间均量
+    pullback_vol_ratios = np.full(n, np.nan)            # 当前均量/第一波均量
+
+    for i in range(n):
+        if i < 60 or pd.isna(close_arr[i]):
+            continue
+
+        # ---- 第一步：在 [15, 80] 天前区间找第一波峰值 ----
+        peak_start = max(0, i - 80)
+        peak_end   = max(0, i - 15)
+        if peak_end <= peak_start + 10:
+            continue
+
+        peak_idx_in_range = peak_start + np.argmax(close_arr[peak_start:peak_end])
+        peak_price = close_arr[peak_idx_in_range]
+
+        if pd.isna(peak_price) or peak_price <= 0:
+            continue
+
+        # ---- 第二步：峰值之前找一波起涨点（峰值往前20~60天的低点）----
+        base_start = max(0, peak_idx_in_range - 60)
+        base_end   = max(0, peak_idx_in_range - 20)
+        if base_end <= base_start + 5:
+            continue
+
+        base_idx = base_start + np.argmin(close_arr[base_start:base_end])
+        base_price = close_arr[base_idx]
+
+        if pd.isna(base_price) or base_price <= 0:
+            continue
+
+        wave_gain = peak_price / base_price - 1
+        if wave_gain < 0.20:  # 第一波至少涨20%
+            continue
+
+        # ---- 第三步：验证第一波期间 MA5 > MA20 的天数占比 ----
+        wave_slice = slice(base_idx, peak_idx_in_range + 1)
+        wave_len = peak_idx_in_range - base_idx + 1
+        if wave_len < 8:
+            continue
+
+        ma5_seg = ma5_arr[wave_slice]
+        ma20_seg = ma20_arr[wave_slice]
+        valid_mask = ~(pd.isna(ma5_seg) | pd.isna(ma20_seg))
+        if valid_mask.sum() < max(5, wave_len * 0.5):
+            continue
+
+        uptrend_ratio = (ma5_seg[valid_mask] > ma20_seg[valid_mask]).sum() / valid_mask.sum()
+        if uptrend_ratio < 0.50:  # 第一波期间需50%以上天数 MA5 > MA20
+            continue
+
+        # ---- 第四步：从峰值到当前的回调特征 ----
+        pullback_len = i - peak_idx_in_range
+        if pullback_len < 8:
+            continue
+
+        # 峰值以来收盘价的反弹阳线次数（阶梯特征）
+        pullback_slice = slice(peak_idx_in_range + 1, i + 1)
+        pullback_pct = pct_arr[pullback_slice]
+        stair_count = int(((pullback_pct > 2.0) & ~np.isnan(pullback_pct)).sum())
+
+        # 第一波期间的平均成交量
+        wave_vol = vol_arr[wave_slice]
+        wave_vol_valid = wave_vol[~np.isnan(wave_vol)]
+        wave_vol_avg = float(np.mean(wave_vol_valid)) if len(wave_vol_valid) > 0 else np.nan
+
+        # 近10日均量 / 第一波均量（越小越缩量）
+        pullback_vol_slice = vol_arr[max(0, i - 9):i + 1]
+        pullback_vol_valid = pullback_vol_slice[~np.isnan(pullback_vol_slice)]
+        pullback_vol_avg = float(np.mean(pullback_vol_valid)) if len(pullback_vol_valid) > 0 else np.nan
+        pullback_vol_ratio = pullback_vol_avg / wave_vol_avg if (wave_vol_avg > 0 and not np.isnan(wave_vol_avg)) else np.nan
+
+        # ---- 存储结果 ----
+        wave_peak_prices[i]    = peak_price
+        wave_peak_positions[i] = i - peak_idx_in_range
+        wave_base_prices[i]    = base_price
+        wave_gains[i]          = wave_gain
+        pullback_ratios[i]     = close_arr[i] / peak_price - 1   # 负值=已回调
+        room_to_peak[i]        = 1 - close_arr[i] / peak_price   # 正值=还有空间
+        stair_counts[i]        = stair_count
+        wave_vol_avgs[i]       = wave_vol_avg
+        pullback_vol_ratios[i] = pullback_vol_ratio
+
+    df["第一波峰值"]      = wave_peak_prices
+    df["第一波峰值距今天数"] = wave_peak_positions
+    df["第一波起涨价"]    = wave_base_prices
+    df["第一波涨幅"]      = wave_gains          # 第一波真实涨幅（峰值/起涨价-1）
+    df["从高点回调幅度"]  = pullback_ratios      # 负值=已回调
+    df["距前高空间"]      = room_to_peak         # 正值=还有空间
+
+    # ---- 阶梯式回调：峰值以来至少出现过2次涨幅>2%的反弹阳线 ----
+    df["阶梯式回调"]      = stair_counts >= 2
+
+    # ---- 回调缩量：近10日 vs 第一波期间均量 ----
+    df["回调缩量比"]      = pullback_vol_ratios  # <0.5 说明缩量明显
+    # 兼容旧字段名
+    df["缩量比5日"]       = pullback_vol_ratios
+    df["缩量比10日"]      = pullback_vol_ratios
 
     # ---- 均线趋势 ----
     df["MA5_3日前"] = df["SMA5"].shift(3)
@@ -590,10 +808,6 @@ def prepare_hist_data(df: pd.DataFrame) -> pd.DataFrame:
         (df["近20日最低收盘"] <= df["前20日最低收盘"] * 1.02)
         & (df["近20日最低DIF"] > df["前20日最低DIF"])
     )
-
-    # ---- 回调结构：阶梯式（非直线暴跌），近20日有过像样的反弹阳线 ----
-    df["近20日最大涨幅"] = df["涨跌幅"].rolling(20, min_periods=10).max()
-    df["阶梯式回调"] = df["近20日最大涨幅"] >= 3.0
 
     # ---- 前期平台支撑：40~60天前的20日均价作为平台参考 ----
     df["远期均价"] = df["收盘"].shift(40).rolling(20).mean()
