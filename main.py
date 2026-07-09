@@ -3,6 +3,12 @@
 import argparse
 import os
 import time
+import smtplib
+from email.mime.text import MIMEText
+from email.mime.multipart import MIMEMultipart
+from email.mime.base import MIMEBase
+from email import encoders
+from email.header import Header
 from datetime import datetime
 
 import pandas as pd
@@ -10,7 +16,7 @@ from wcwidth import wcswidth
 
 from data_loader import load_a_stock_spot, disable_proxy
 from filters import apply_filters
-from config import OUTPUT_FILE
+from config import OUTPUT_FILE, EMAIL_CONFIG
 from strategy import scan_main_rising_stocks
 from concept_analyzer import analyze_concept_resonance
 
@@ -984,6 +990,72 @@ def run_daily(args=None):
 
     print_signal_group_by_strategy("未涨停信号", not_limit_up_df, max_rows=50)
     print_signal_group_by_strategy("已涨停信号", limit_up_df, max_rows=50)
+
+    # 发送结果邮件
+    send_signal_email(
+        signal_output_file,
+        export_signal_df,
+        not_limit_up_df,
+        limit_up_df,
+        all_breakthrough_df,
+        all_main_promotion_df,
+    )
+
+
+def send_signal_email(excel_path, all_df, not_limit_up_df, limit_up_df, breakthrough_df, main_promo_df):
+    """将当日选股结果通过邮件发送"""
+
+    cfg = EMAIL_CONFIG
+    today = datetime.now().strftime('%Y-%m-%d')
+
+    # 构建摘要
+    def build_stock_table(df, title, max_rows=15):
+        if df is None or df.empty:
+            return f"<p><b>{title}</b>：无</p>"
+        rows_html = ""
+        cols = ["代码", "名称", "信号类型", "最新价", "涨跌幅", "命中策略数"]
+        cols = [c for c in cols if c in df.columns]
+        rows_html += "<tr style='background:#4472C4;color:white;'>" + "".join(f"<th>{c}</th>" for c in cols) + "</tr>\n"
+        for _, row in df.head(max_rows).iterrows():
+            rows_html += "<tr>" + "".join(f"<td>{row.get(c, '')}</td>" for c in cols) + "</tr>\n"
+        return f"<p><b>{title}</b>（{len(df)} 只）</p><table border='1' cellpadding='4' cellspacing='0' style='border-collapse:collapse;font-size:13px;'>{rows_html}</table>"
+
+    body = f"""
+    <h2>📊 A股选股结果 - {today}</h2>
+    <hr>
+    <p>全部信号：<b>{len(all_df)}</b> 只 | 未涨停：{len(not_limit_up_df)} 只 | 已涨停：{len(limit_up_df)} 只</p>
+    <p>突破反转：{len(breakthrough_df)} 只 | 主升信号：{len(main_promo_df)} 只</p>
+    <hr>
+    {build_stock_table(not_limit_up_df, '🔵 未涨停（重点关注）')}
+    <br>
+    {build_stock_table(limit_up_df, '🔴 已涨停（复盘参考）')}
+    <br>
+    <p style='color:#888;font-size:12px;'>完整结果见附件 Excel。本邮件由系统自动发送。</p>
+    """
+
+    msg = MIMEMultipart()
+    msg["From"] = cfg["sender"]
+    msg["To"] = cfg["receiver"]
+    msg["Subject"] = Header(f"A股选股结果 {today} - 共{len(all_df)}只信号", "utf-8")
+    msg.attach(MIMEText(body, "html", "utf-8"))
+
+    # 附件：Excel
+    if os.path.exists(excel_path):
+        with open(excel_path, "rb") as f:
+            part = MIMEBase("application", "octet-stream")
+            part.set_payload(f.read())
+            encoders.encode_base64(part)
+            part.add_header("Content-Disposition", f"attachment; filename={os.path.basename(excel_path)}")
+            msg.attach(part)
+
+    try:
+        server = smtplib.SMTP_SSL(cfg["smtp_server"], cfg["smtp_port"], timeout=15)
+        server.login(cfg["sender"], cfg["password"])
+        server.sendmail(cfg["sender"], cfg["receiver"], msg.as_string())
+        server.quit()
+        print(f"\n📧 选股结果已发送至 {cfg['receiver']}")
+    except Exception as e:
+        print(f"\n📧 邮件发送失败: {e}")
 
 
 # =========================
