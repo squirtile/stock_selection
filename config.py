@@ -7,7 +7,7 @@ import os
 # =========================
 # 为了避免把 Token 上传到 GitHub，优先读取环境变量 TUSHARE_TOKEN。
 # 如果你只是本地测试，也可以把下面的“这里填你的token”替换成自己的 token。
-TUSHARE_TOKEN = os.getenv("TUSHARE_TOKEN", "OaZRxcERYuAvUoZyhzJkwlvfbDvMSRtDlmLMvMUDzbCykDxYZHIuFMAlWXunwvev")
+TUSHARE_TOKEN = os.getenv("TUSHARE_TOKEN", "xxx")
 
 # 你购买的 Tushare 代理地址
 TUSHARE_HTTP_URL = os.getenv("TUSHARE_HTTP_URL", "http://8.136.22.187:8011/")
@@ -51,7 +51,7 @@ OUTPUT_FILE = "output/a_stock_selected.xlsx"
 EMAIL_CONFIG = {
     "smtp_server": "smtp.163.com",
     "smtp_port": 465,
-    "sender": "byxzwz1995@163.com",
-    "password": "UVhQpXPgqqBUDTKb",
-    "receiver": "byxzwz1995@163.com",
+    "sender": "xxx@163.com",
+    "password": "xxx",
+    "receiver": "xxx@163.com",
 }
