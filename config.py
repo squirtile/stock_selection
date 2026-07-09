@@ -44,3 +44,14 @@ EXCLUDE_INDUSTRIES = [
 
 # 导出路径
 OUTPUT_FILE = "output/a_stock_selected.xlsx"
+
+# =========================
+# 163 邮箱 SMTP 配置
+# =========================
+EMAIL_CONFIG = {
+    "smtp_server": "smtp.163.com",
+    "smtp_port": 465,
+    "sender": "byxzwz1995@163.com",
+    "password": "UVhQpXPgqqBUDTKb",
+    "receiver": "byxzwz1995@163.com",
+}

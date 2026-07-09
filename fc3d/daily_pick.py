@@ -9,11 +9,19 @@
 import pandas as pd
 import numpy as np
 import os
+import sys
+import smtplib
+from email.mime.text import MIMEText
+from email.header import Header
 from itertools import product
 from datetime import datetime, timedelta
 
 # ── 路径 ──
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+PROJECT_ROOT = os.path.join(BASE_DIR, '..')
+sys.path.insert(0, PROJECT_ROOT)
+from config import EMAIL_CONFIG
+
 DATA_FILE = os.path.join(BASE_DIR, '福彩3D历史开奖数据.csv')
 OUTPUT_FILE = os.path.join(BASE_DIR, '每日推荐.csv')
 
@@ -127,3 +135,58 @@ pd.DataFrame([output]).to_csv(
     header=not os.path.exists(OUTPUT_FILE)
 )
 print(f"\n已追加到 fc3d/每日推荐.csv")
+
+# ═══════════════════════════════════════════
+# 6. 发送邮件
+# ═══════════════════════════════════════════
+
+def send_pick_email():
+    """将今日推荐通过邮件发送"""
+    cfg = EMAIL_CONFIG
+    today = datetime.now().strftime('%Y-%m-%d')
+    
+    # 构建 Top5 列表
+    top5_rows = ""
+    for rank, num in enumerate(picked_nums, 1):
+        cnt = hot_counts.get(num, 0)
+        b2, s2, g2 = num//100, (num//10)%10, num%10
+        he2 = b2 + s2 + g2
+        sp2 = max(b2,s2,g2) - min(b2,s2,g2)
+        marker = " ⭐主推" if rank == 1 else ""
+        top5_rows += f"<tr><td>{rank}</td><td><b>{num:03d}</b></td><td>{b2}{s2}{g2}</td><td>出现{cnt}次</td><td>和值{he2}</td><td>跨度{sp2}{marker}</td></tr>\n"
+    
+    body = f"""
+    <h2>🎲 福彩3D 每日推荐 - {today}</h2>
+    <hr>
+    <table border="1" cellpadding="6" cellspacing="0" style="border-collapse:collapse;">
+        <tr style="background:#4472C4;color:white;">
+            <th>排名</th><th>号码</th><th>直选</th><th>热度</th><th>和值</th><th>跨度</th>
+        </tr>
+        {top5_rows}
+    </table>
+    <br>
+    <p>💡 <b>Top5 一起买 (10元)</b>：{[f'{n:03d}' for n in picked_nums]}</p>
+    <p>💡 买全部 {len(candidates)} 个：{len(candidates)*2} 元/期（命中率 ~35%）</p>
+    <hr>
+    <p style="color:#888;font-size:12px;">
+    策略：组六 + 和值[7,20] + 跨度[4,7] + 奇偶不全同 → 热度加权随机<br>
+    历史命中率：{df['num'].isin(cand_set).mean()*100:.1f}% | 候选总数：{len(candidates)} 个<br>
+    ⚠️ 随机≠策略优势，彩票期望为负，理性购彩。
+    </p>
+    """
+    
+    msg = MIMEText(body, "html", "utf-8")
+    msg["From"] = cfg["sender"]
+    msg["To"] = cfg["receiver"]
+    msg["Subject"] = Header(f"福彩3D每日推荐 {today} - {' '.join([f'{n:03d}' for n in picked_nums])}", "utf-8")
+    
+    try:
+        server = smtplib.SMTP_SSL(cfg["smtp_server"], cfg["smtp_port"], timeout=15)
+        server.login(cfg["sender"], cfg["password"])
+        server.sendmail(cfg["sender"], cfg["receiver"], msg.as_string())
+        server.quit()
+        print(f"📧 邮件已发送至 {cfg['receiver']}")
+    except Exception as e:
+        print(f"📧 邮件发送失败: {e}")
+
+send_pick_email()

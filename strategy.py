@@ -180,117 +180,97 @@ def get_hist_data_baostock(
         if VERBOSE_KLINE_LOG:
             print(f"{code} 无本地BaoStock缓存，首次获取最近365天K线...")
 
-    try:
-        rs = bs.query_history_k_data_plus(
-            bs_code,
-            fields="date,open,high,low,close,volume,amount,pctChg",
-            start_date=start_date,
-            end_date=end_date,
-            frequency="d",
-            adjustflag="2"
-        )
-
-        if rs.error_code != "0":
-            print(f"{code} BaoStock查询失败：{rs.error_msg}")
-
-            # 如果新数据获取失败，但有旧缓存，就先用旧缓存
-            if not old_df.empty:
-                last_date = old_df["日期"].max()
-                if VERBOSE_KLINE_LOG:
-                    print(f"{code} 使用旧缓存，最新K线日期：{last_date.strftime('%Y-%m-%d')}")
-                old_df["日期"] = old_df["日期"].dt.strftime("%Y-%m-%d")
-                return old_df
-
-            return pd.DataFrame()
-
-        data_list = []
-
-        while rs.next():
-            data_list.append(rs.get_row_data())
-
-        if data_list:
-            new_df = pd.DataFrame(data_list, columns=rs.fields)
-
-            new_df = new_df.rename(
-                columns={
-                    "date": "日期",
-                    "open": "开盘",
-                    "high": "最高",
-                    "low": "最低",
-                    "close": "收盘",
-                    "volume": "成交量",
-                    "amount": "成交额",
-                    "pctChg": "涨跌幅",
-                }
+    MAX_RETRIES = 3
+    last_error = None
+    for retry in range(MAX_RETRIES):
+        try:
+            rs = bs.query_history_k_data_plus(
+                bs_code,
+                fields="date,open,high,low,close,volume,amount,pctChg",
+                start_date=start_date,
+                end_date=end_date,
+                frequency="d",
+                adjustflag="2"
             )
 
-            new_df["代码"] = code
+            if rs.error_code != "0":
+                print(f"{code} BaoStock查询失败：{rs.error_msg}")
+                # 业务错误不重试，直接回退缓存
+                if not old_df.empty:
+                    last_date = old_df["日期"].max()
+                    if VERBOSE_KLINE_LOG:
+                        print(f"{code} 使用旧缓存，最新K线日期：{last_date.strftime('%Y-%m-%d')}")
+                    old_df["日期"] = old_df["日期"].dt.strftime("%Y-%m-%d")
+                    return old_df
+                return pd.DataFrame()
 
-            numeric_cols = [
-                "开盘",
-                "最高",
-                "最低",
-                "收盘",
-                "成交量",
-                "成交额",
-                "涨跌幅",
-            ]
+            data_list = []
+            while rs.next():
+                data_list.append(rs.get_row_data())
 
-            for col in numeric_cols:
-                new_df[col] = pd.to_numeric(new_df[col], errors="coerce")
+            if data_list:
+                new_df = pd.DataFrame(data_list, columns=rs.fields)
+                new_df = new_df.rename(
+                    columns={
+                        "date": "日期",
+                        "open": "开盘",
+                        "high": "最高",
+                        "low": "最低",
+                        "close": "收盘",
+                        "volume": "成交量",
+                        "amount": "成交额",
+                        "pctChg": "涨跌幅",
+                    }
+                )
+                new_df["代码"] = code
 
-            new_df["日期"] = pd.to_datetime(new_df["日期"])
+                numeric_cols = [
+                    "开盘", "最高", "最低", "收盘",
+                    "成交量", "成交额", "涨跌幅",
+                ]
+                for col in numeric_cols:
+                    new_df[col] = pd.to_numeric(new_df[col], errors="coerce")
 
-            if not old_df.empty:
-                df = pd.concat([old_df, new_df], ignore_index=True)
-            else:
-                df = new_df
+                new_df["日期"] = pd.to_datetime(new_df["日期"])
 
-            # 日期去重，保留最后一次
-            df = df.drop_duplicates(subset=["日期"], keep="last")
+                if not old_df.empty:
+                    df = pd.concat([old_df, new_df], ignore_index=True)
+                else:
+                    df = new_df
 
-            # 按日期排序
-            df = df.sort_values("日期")
+                df = df.drop_duplicates(subset=["日期"], keep="last")
+                df = df.sort_values("日期")
 
-            # 只保留最近365个自然日附近的数据，避免文件无限变大
-            cutoff_date = datetime.now() - timedelta(days=365)
-            df = df[df["日期"] >= cutoff_date]
+                cutoff_date = datetime.now() - timedelta(days=365)
+                df = df[df["日期"] >= cutoff_date]
 
-            latest_date = df["日期"].max().strftime("%Y-%m-%d")
-            if VERBOSE_KLINE_LOG:
-                print(f"{code} BaoStock K线已更新到：{latest_date}")
-
-            # 保存时日期转成字符串
-            df["日期"] = df["日期"].dt.strftime("%Y-%m-%d")
-            df.to_csv(cache_file, index=False, encoding="utf-8-sig")
-
-            return df
-
-        else:
-            # 没有新数据，说明可能今天还没更新，直接用旧缓存
-            if not old_df.empty:
-                last_date = old_df["日期"].max()
+                latest_date = df["日期"].max().strftime("%Y-%m-%d")
                 if VERBOSE_KLINE_LOG:
-                    print(f"{code} BaoStock暂无新数据，使用缓存，最新K线日期：{last_date.strftime('%Y-%m-%d')}")
+                    print(f"{code} BaoStock K线已更新到：{latest_date}")
 
-                old_df["日期"] = old_df["日期"].dt.strftime("%Y-%m-%d")
-                return old_df
+                df["日期"] = df["日期"].dt.strftime("%Y-%m-%d")
+                df.to_csv(cache_file, index=False, encoding="utf-8-sig")
+                return df
 
-            print(f"{code} BaoStock没有返回K线数据。")
-            return pd.DataFrame()
+            else:
+                # 没有新数据，用旧缓存
+                if not old_df.empty:
+                    last_date = old_df["日期"].max()
+                    if VERBOSE_KLINE_LOG:
+                        print(f"{code} BaoStock暂无新数据，使用缓存，最新K线日期：{last_date.strftime('%Y-%m-%d')}")
+                    old_df["日期"] = old_df["日期"].dt.strftime("%Y-%m-%d")
+                    return old_df
+                print(f"{code} BaoStock没有返回K线数据。")
+                return pd.DataFrame()
 
-    except Exception as e:
-        print(f"{code} BaoStock K线获取失败：{e}")
+        except Exception as e:
+            last_error = e
+            if retry < MAX_RETRIES - 1:
+                time.sleep(2 * (retry + 1))
+            # 3次都失败，抛出让外层处理（重登+重试）
 
-        if not old_df.empty:
-            last_date = old_df["日期"].max()
-            if VERBOSE_KLINE_LOG:
-                print(f"{code} 使用旧缓存，最新K线日期：{last_date.strftime('%Y-%m-%d')}")
-
-            old_df["日期"] = old_df["日期"].dt.strftime("%Y-%m-%d")
-            return old_df
-
-        return pd.DataFrame()
+    # 重试耗尽，抛出最后一个异常给外层
+    raise last_error
 
 
 # 兼容旧函数名：如果其他地方还调用 get_hist_data_tushare，也转到 BaoStock。
@@ -1109,13 +1089,34 @@ def scan_main_rising_stocks(
         if allow_update and not login_failed:
             print(f"\n阶段1：单线程更新日K缓存（共 {total} 只）...")
             phase1_start = time.time()
+            failed_stocks = []  # 记录重登后仍然失败的股票，最后统一再抢救一次
             for i, (_, row) in enumerate(stock_pool_df.iterrows(), start=1):
                 code = str(row["代码"]).zfill(6)
                 name = row["名称"]
                 try:
                     get_hist_data_baostock(code, cache_only=False, force_update=do_update)
-                except Exception:
-                    pass
+                except Exception as e:
+                    # 内部3次重试都失败 → 重登 → 再试一次
+                    print(f"\n  {code} {name} 失败({e})，重登后重试...")
+                    try:
+                        bs.logout()
+                    except Exception:
+                        pass
+                    time.sleep(2)
+                    try:
+                        lg = bs.login()
+                        if getattr(lg, "error_code", None) == "0":
+                            try:
+                                get_hist_data_baostock(code, cache_only=False, force_update=do_update)
+                            except Exception:
+                                failed_stocks.append((code, name))  # 重登后仍失败，记录待抢救
+                        else:
+                            print(f"  重登失败: {getattr(lg, 'error_msg', '未知')}，切换为仅缓存模式。")
+                            break
+                    except Exception as login_err:
+                        print(f"  重登异常: {login_err}，切换为仅缓存模式。")
+                        break
+
                 elapsed = time.time() - phase1_start
                 remaining = (total - i) * elapsed / i if i > 0 else 0
                 print(
@@ -1127,6 +1128,31 @@ def scan_main_rising_stocks(
                 time.sleep(0.03)
             print()
             print(f"  缓存更新完成，耗时 {time.time()-phase1_start:.1f} 秒")
+
+            # 最后统一抢救一轮失败的股票
+            if failed_stocks:
+                print(f"\n  最后尝试抢救 {len(failed_stocks)} 只失败的股票...")
+                try:
+                    bs.logout()
+                except Exception:
+                    pass
+                time.sleep(2)
+                try:
+                    lg = bs.login()
+                    if getattr(lg, "error_code", None) == "0":
+                        rescued = 0
+                        for fcode, fname in failed_stocks:
+                            try:
+                                get_hist_data_baostock(fcode, cache_only=False, force_update=do_update)
+                                rescued += 1
+                                print(f"    {fcode} {fname} ✅")
+                            except Exception:
+                                print(f"    {fcode} {fname} ❌")
+                        print(f"  抢救结果：{rescued}/{len(failed_stocks)} 成功")
+                    else:
+                        print(f"  抢救前重登失败，跳过。")
+                except Exception:
+                    print(f"  抢救前重登异常，跳过。")
 
         # ================================================================
         # 阶段2：多线程从缓存扫描

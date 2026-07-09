@@ -11,7 +11,7 @@ import re
 import time
 from datetime import datetime
 
-OUTPUT_DIR = os.path.join(os.path.dirname(__file__), "fc3d")
+OUTPUT_DIR = os.path.dirname(__file__)
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 
 API_URL = "https://www.cwl.gov.cn/cwl_admin/front/cwlkj/search/kjxx/findDrawNotice"
