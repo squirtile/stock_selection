@@ -25,3 +25,5 @@ config.py
 
 fc3d/*.csv
 fc3d/*.xlsx
+
+*.log

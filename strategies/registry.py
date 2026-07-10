@@ -2,25 +2,11 @@ from __future__ import annotations
 
 from .base_strategy import BaseDailyStrategy, BaseMinuteStrategy, StrategySignal, MinuteStrategySignal
 from .daily_strategies import (
-    # BottomVolumeReversalStrategy,
-    # BoxBreakoutStrategy,
-    # MainBottomVolumeReversalStrategy,
-    # MainBoxBreakoutStrategy,
-    # MainBullishMAAlignmentStrategy,
-    # MainPullbackStartStrategy,
     MainBigYangPullbackNoBreakStrategy,
-
-    # MainChipCleanPlatformTrendStrategy,
-    # MainHotStockBollMiddleReboundStrategy,
-    # MainLimitBreakReversalStrategy,
-    # MainBullishDivergencePlatformBreakStrategy,
-
-    # LongBuildWashBreakoutStrategy,
-    
-    # VShapeReversalStrategy,
+    MainBullishMAAlignmentStrategy,
     SecondWaveStrategy,
+    SecondWaveAmbushStrategy,
     AnnualLineBreakStrategy,
-    LimitUpPullbackDayTradeStrategy,
 )
 
 
@@ -33,32 +19,16 @@ def get_daily_strategies() -> list[BaseDailyStrategy]:
     """
 
     return [
-        # BoxBreakoutStrategy(),
-        # BottomVolumeReversalStrategy(),
-        # MainBoxBreakoutStrategy(),
-        # MainBottomVolumeReversalStrategy(),
-        # MainPullbackStartStrategy(),
-        # MainBullishMAAlignmentStrategy(),
-        MainBigYangPullbackNoBreakStrategy(),
+        # 趋势跟踪
+        MainBullishMAAlignmentStrategy(),
 
-        # 新增：用户规则 1、3、4、5
-        # MainChipCleanPlatformTrendStrategy(),
-        # MainHotStockBollMiddleReboundStrategy(),
-        # MainLimitBreakReversalStrategy(),
-        # MainBullishDivergencePlatformBreakStrategy(),
-
-        # LongBuildWashBreakoutStrategy(),
-
-        # VShapeReversalStrategy(),
-
-        # 二波形态（含4个子条件：回调结构/MACD底背离/地量反弹/平台支撑）
+        # 回调买入
+        SecondWaveAmbushStrategy(),
         SecondWaveStrategy(),
 
-        # 年线突破：触及250日线后上穿，连续2天站稳
+        # 突破
+        MainBigYangPullbackNoBreakStrategy(),
         AnnualLineBreakStrategy(),
-
-        # 涨停回调一日游：涨停→缩量回调→企稳→尾盘买明天卖
-        LimitUpPullbackDayTradeStrategy(),
     ]
 
 

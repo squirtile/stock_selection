@@ -622,250 +622,7 @@ class LongBuildWashBreakoutStrategy(BaseDailyStrategy):
             and volume_ok
             and not_limit_chasing
         )
-    """
-    长庄建仓洗盘后突破策略
 
-    逻辑：
-    1. 过去 3-6 个月存在明显建仓平台；
-    2. 过去 6 个月以上整体处于横盘洗盘状态；
-    3. 当前价格近期突破建仓平台上沿；
-    4. 最近 15 个交易日内有 2-3 个涨停，或者多次 5%以上大阳线吸引人气；
-    5. 当前价格不能偏离平台过远，避免追高。
-    """
-
-    name = "长庄-建仓洗盘突破"
-    category = "主升"
-
-    def match(self, row: pd.Series) -> bool:
-        need_cols = [
-            "收盘",
-            "成交量",
-            "建仓区间最高价",
-            "建仓区间最低价",
-            "建仓平台振幅",
-            "洗盘区间最高价",
-            "洗盘区间最低价",
-            "洗盘区间振幅",
-            "近15日涨停次数",
-            "近15日5点大阳次数",
-            "近5日是否突破建仓平台",
-            "近5日平均成交量",
-            "建仓后基准成交量",
-        ]
-
-        for col in need_cols:
-            if col not in row.index or pd.isna(row[col]):
-                return False
-
-        close = float(row["收盘"])
-        build_high = float(row["建仓区间最高价"])
-        build_low = float(row["建仓区间最低价"])
-        build_range_pct = float(row["建仓平台振幅"])
-
-        wash_high = float(row["洗盘区间最高价"])
-        wash_low = float(row["洗盘区间最低价"])
-        wash_range_pct = float(row["洗盘区间振幅"])
-
-        limit_up_count = float(row["近15日涨停次数"])
-        big_yang_count = float(row["近15日5点大阳次数"])
-
-        recent_vol = float(row["近5日平均成交量"])
-        base_vol = float(row["建仓后基准成交量"])
-
-        if close <= 0 or build_high <= 0 or build_low <= 0 or wash_high <= 0 or wash_low <= 0:
-            return False
-
-        # 1. 3-6个月建仓平台：振幅不能太大
-        is_build_platform = build_range_pct <= 0.45
-
-        # 2. 6个月以上洗盘：允许比建仓平台更宽，但不能已经走成大主升
-        is_long_wash = wash_range_pct <= 0.70
-
-        # 3. 近期突破建仓平台
-        recent_breakout = bool(row["近5日是否突破建仓平台"])
-
-        # 4. 当前不能离平台太远，避免已经高潮
-        not_overextended = close <= build_high * 1.18
-
-        # 5. 当前也不能远高于洗盘区间太多
-        not_too_high_from_wash = close <= wash_high * 1.25
-
-        # 6. 近期人气：2-3个涨停，或者至少2根5%以上大阳
-        has_popularity = (
-            2 <= limit_up_count <= 3
-            or big_yang_count >= 2
-        )
-
-        # 7. 量能确认：近5日均量比前期基准放大
-        volume_ok = True
-        if base_vol > 0:
-            volume_ok = recent_vol >= base_vol * 1.3
-
-        # 8. 当天不能接近涨停追高
-        pct = pd.to_numeric(row.get("涨跌幅", pd.NA), errors="coerce")
-        not_limit_chasing = True if pd.isna(pct) else pct < 9.5
-
-        return bool(
-            is_build_platform
-            and is_long_wash
-            and recent_breakout
-            and not_overextended
-            and not_too_high_from_wash
-            and has_popularity
-            and volume_ok
-            and not_limit_chasing
-        )
-    """
-    长庄建仓洗盘后突破策略
-
-    逻辑：
-    1. 过去 3-6 个月存在明显建仓平台；
-    2. 过去 6 个月以上整体处于横盘洗盘状态；
-    3. 当前价格近期突破建仓平台上沿；
-    4. 最近 15 个交易日内有 2-3 个涨停，或者多次 5%以上大阳线吸引人气；
-    5. 当前价格不能偏离平台过远，避免追高。
-    """
-
-    name = "长庄-建仓洗盘突破"
-    category = "主升"
-
-    def match(self, df):
-        if df is None or len(df) < 180:
-            return False, ""
-
-        data = df.copy()
-
-        # 兼容字段
-        close_col = "close" if "close" in data.columns else "收盘"
-        high_col = "high" if "high" in data.columns else "最高"
-        low_col = "low" if "low" in data.columns else "最低"
-        vol_col = "volume" if "volume" in data.columns else "成交量"
-
-        if close_col not in data.columns or high_col not in data.columns or low_col not in data.columns:
-            return False, ""
-
-        data[close_col] = data[close_col].astype(float)
-        data[high_col] = data[high_col].astype(float)
-        data[low_col] = data[low_col].astype(float)
-
-        if vol_col in data.columns:
-            data[vol_col] = data[vol_col].astype(float)
-
-        today = data.iloc[-1]
-        today_close = float(today[close_col])
-
-        # =========================================================
-        # 1. 建仓区间：最近 60-120 个交易日
-        # 大概对应 3-6 个月
-        # =========================================================
-        build_window = data.iloc[-120:-20]
-
-        if len(build_window) < 60:
-            return False, ""
-
-        build_high = build_window[high_col].max()
-        build_low = build_window[low_col].min()
-        build_mid = (build_high + build_low) / 2
-
-        if build_mid <= 0:
-            return False, ""
-
-        build_range_pct = (build_high - build_low) / build_mid
-
-        # 建仓区间不能太剧烈，最好是平台震荡
-        # 这里设为 45%，你可以根据实盘改成 35%-55%
-        is_build_platform = build_range_pct <= 0.45
-
-        # =========================================================
-        # 2. 洗盘区间：最近 180 个交易日
-        # 大概对应 6个月以上
-        # 判断长期没有严重破位，也没有提前大幅主升
-        # =========================================================
-        wash_window = data.iloc[-180:-10]
-
-        wash_high = wash_window[high_col].max()
-        wash_low = wash_window[low_col].min()
-        wash_mid = (wash_high + wash_low) / 2
-
-        if wash_mid <= 0:
-            return False, ""
-
-        wash_range_pct = (wash_high - wash_low) / wash_mid
-
-        # 洗盘可以比建仓稍微宽一点，但不能已经走出大主升
-        is_long_wash = wash_range_pct <= 0.70
-
-        # 当前价格不能远高于 180 日平台太多
-        not_too_high_from_wash = today_close <= wash_high * 1.25
-
-        # =========================================================
-        # 3. 近期突破建仓价
-        # 用建仓区间高点作为“建仓价/平台压力位”
-        # 当前收盘价突破平台上沿
-        # =========================================================
-        breakout_price = build_high
-
-        recent_5 = data.iloc[-5:]
-        recent_breakout = (
-            today_close > breakout_price * 1.02
-            and recent_5[close_col].max() > breakout_price * 1.02
-        )
-
-        # 突破不能太远，避免已经高潮
-        not_overextended = today_close <= breakout_price * 1.18
-
-        # =========================================================
-        # 4. 近期人气：2-3 个涨停，或者多次 5% 大阳
-        # =========================================================
-        recent_15 = data.iloc[-15:].copy()
-
-        recent_15["pct_chg_calc"] = recent_15[close_col].pct_change() * 100
-
-        # 主板涨停近似按 9.8% 以上处理
-        limit_up_count = (recent_15["pct_chg_calc"] >= 9.8).sum()
-
-        # 5%以上大阳线
-        big_yang_count = (recent_15["pct_chg_calc"] >= 5.0).sum()
-
-        has_popularity = (
-            2 <= limit_up_count <= 3
-            or big_yang_count >= 2
-        )
-
-        # =========================================================
-        # 5. 量能确认：近期成交量放大
-        # =========================================================
-        volume_ok = True
-
-        if vol_col in data.columns:
-            recent_vol = data.iloc[-5:][vol_col].mean()
-            base_vol = data.iloc[-60:-10][vol_col].mean()
-
-            if base_vol > 0:
-                volume_ok = recent_vol >= base_vol * 1.3
-
-        # =========================================================
-        # 最终信号
-        # =========================================================
-        if (
-            is_build_platform
-            and is_long_wash
-            and not_too_high_from_wash
-            and recent_breakout
-            and not_overextended
-            and has_popularity
-            and volume_ok
-        ):
-            reason = (
-                f"长庄建仓洗盘后突破："
-                f"建仓平台振幅{build_range_pct * 100:.1f}%，"
-                f"6个月洗盘振幅{wash_range_pct * 100:.1f}%，"
-                f"突破价{breakout_price:.2f}，当前价{today_close:.2f}，"
-                f"近15日涨停{limit_up_count}次，5%以上大阳{big_yang_count}次"
-            )
-            return True, reason
-
-        return False, ""
 
 
 # ======================================================================================
@@ -1130,6 +887,157 @@ class SecondWaveStrategy(BaseDailyStrategy):
             parts = []
             if r1:
                 parts.append("回调结构")
+            if r2:
+                parts.append(f"MACD({t2})")
+            if r3:
+                parts.append(t3)
+            if r4:
+                parts.append(t4)
+
+            hit_count = sum([r1, r2, r3, r4])
+            reason = " + ".join(parts)
+            if hit_count >= 3:
+                reason = f"【强】{reason}"
+            elif hit_count == 2:
+                reason = f"【中】{reason}"
+            else:
+                reason = f"【弱】{reason}"
+
+            return StrategySignal(name=self.name, category=self.category, reason=reason)
+
+        except Exception:
+            return None
+
+
+# ======================================================================================
+# 二波埋伏策略
+# 与 SecondWaveStrategy（二波形态）的区别：
+#   二波形态 = 回调到位 + 今日启动确认（放量阳线）→ 追启动日
+#   二波埋伏 = 回调到位 + 缩量企稳 + 尚未拉升      → 提前埋伏
+# ======================================================================================
+
+class SecondWaveAmbushStrategy(BaseDailyStrategy):
+    """
+    二波埋伏：回调到位 + 缩量企稳 → 等待二波启动。
+
+    命中条件：满足回调结构 + 确认尚未拉升（今日涨幅温和、未放量）。
+    与二波形态互补：埋伏策略先选池，启动日再用二波形态确认加仓。
+    """
+
+    name = "二波埋伏"
+    category = "主升"
+
+    # ------------------------------------------------------------------
+    # 埋伏条件：回调结构（不含启动确认）+ 反启动过滤
+    # ------------------------------------------------------------------
+    @staticmethod
+    def _check_ambush_structure(row: pd.Series) -> tuple[bool, str]:
+        """回调到位 + 缩量企稳 + 确认尚未拉升"""
+        fields = [
+            "收盘", "涨跌幅", "成交量", "开盘",
+            "近5日平均成交量",
+            "SMA5", "SMA10", "SMA20", "SMA60",
+            "第一波涨幅", "从高点回调幅度", "距前高空间",
+            "缩量比5日", "MA5趋势", "阶梯式回调",
+            "昨日涨跌幅",
+        ]
+        for c in fields:
+            if c not in row.index or pd.isna(row[c]):
+                return False, "字段缺失"
+
+        close   = float(row["收盘"])
+        pct     = float(row["涨跌幅"])
+        vol     = float(row["成交量"])
+        vol5    = float(row["近5日平均成交量"])
+        ma5     = float(row["SMA5"])
+        ma10    = float(row["SMA10"])
+        ma20    = float(row["SMA20"])
+        ma60    = float(row["SMA60"])
+
+        wave    = float(row["第一波涨幅"])
+        dd      = float(row["从高点回调幅度"])
+        room    = float(row["距前高空间"])
+        shrink  = float(row["缩量比5日"])
+        ma5_d   = float(row["MA5趋势"])
+        stair   = bool(row["阶梯式回调"])
+
+        yesterday_pct = float(row["昨日涨跌幅"])
+
+        if close <= 0 or ma20 <= 0 or ma60 <= 0:
+            return False, "价格或均线异常"
+
+        # ① 第一波大涨过：涨幅 >= 25%
+        if wave < 0.25:
+            return False, f"第一波涨幅不足({wave*100:.0f}%)"
+
+        # ② 回调 18%~35%
+        max_dd = 0.35
+        if dd > -0.18:
+            return False, f"回调不足({dd*100:.0f}%，需≥18%)"
+        if dd < -max_dd:
+            return False, f"回调过深({dd*100:.0f}%，需≤35%)"
+
+        # ③ 中期均线支撑
+        if close < ma60 * 0.85:
+            return False, "收盘跌破MA60超15%"
+        if ma20 < ma60 * 0.88:
+            return False, "MA20明显低于MA60"
+
+        # ④ 缩量确认
+        if shrink > 1.20:
+            return False, f"回调期未缩量(量比{shrink*100:.0f}%)"
+
+        # ⑤ 阶梯式回调或站上均线
+        if not stair:
+            if close < ma5 or close < ma10:
+                return False, "非阶梯回调且未站上MA5/MA10"
+
+        # ⑥ 企稳信号：收盘在MA5附近（±3%），MA5不再下行
+        if close < ma5 * 0.97:
+            return False, "未企稳(收盘低于MA5)"
+        if ma5_d < -0.03 * close:
+            return False, "MA5仍在下行"
+
+        # ⑦ 距前高还有上涨空间（≥12%，比启动策略更保守，留足安全垫）
+        if room < 0.12:
+            return False, f"距前高太近({room*100:.0f}%)"
+
+        # ⑧ 反启动过滤：确认尚未拉升（与二波形态互补）
+        # ⑧a 今日涨幅 -2% ~ +2.5%（温和波动，非启动日）
+        if pct < -2.0:
+            return False, f"今日跌幅过大({pct*100:.1f}%)"
+        if pct >= 2.5:
+            return False, f"今日涨幅偏大({pct*100:.1f}%)，可能已在启动"
+        # ⑧b 昨日也未大涨（<5%，排除连续拉升中）
+        if yesterday_pct >= 5.0:
+            return False, f"昨日涨幅过大({yesterday_pct*100:.1f}%)"
+        # ⑧c 今日不放量（量 < 5日均量 × 1.3，确认不是偷偷启动）
+        if vol > vol5 * 1.3:
+            return False, f"今日放量(量比{vol/vol5:.1f})，可能已在启动"
+
+        return True, "✓"
+
+    # ------------------------------------------------------------------
+    # 主入口
+    # ------------------------------------------------------------------
+    def match(self, row: pd.Series) -> bool:
+        ok, _ = self._check_ambush_structure(row)
+        return ok
+
+    def evaluate(self, row: pd.Series) -> StrategySignal | None:
+        if not self.enabled:
+            return None
+
+        try:
+            r1, t1 = self._check_ambush_structure(row)
+            r2, t2 = SecondWaveStrategy._check_macd_divergence(row)
+            r3, t3 = SecondWaveStrategy._check_volume_dry_up(row)
+            r4, t4 = SecondWaveStrategy._check_platform_support(row)
+
+            if not r1:
+                return None
+
+            parts = ["回调到位"]
             if r2:
                 parts.append(f"MACD({t2})")
             if r3:

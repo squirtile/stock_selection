@@ -650,6 +650,7 @@ def main():
     import argparse
     parser = argparse.ArgumentParser(description="每日综合选股报告")
     parser.add_argument("--force-update", action="store_true", help="强制更新 BaoStock 日线缓存")
+    parser.add_argument("--no-email", action="store_true", help="跳过邮件和飞书发送")
     args = parser.parse_args()
 
     total_start = time.time()
@@ -666,11 +667,16 @@ def main():
     # 3.5 生成小程序 JSON
     build_mini_program_json(signal_file, ml_results)
 
-    # 4. 发邮件
-    send_report_email(summary_file, signal_file, ml_results)
+    if args.no_email:
+        print("\n" + "=" * 70)
+        print("⏭️ 跳过邮件和飞书发送（--no-email）")
+        print("=" * 70)
+    else:
+        # 4. 发邮件
+        send_report_email(summary_file, signal_file, ml_results)
 
-    # 5. 发飞书
-    send_feishu_message(signal_file, ml_results)
+        # 5. 发飞书
+        send_feishu_message(signal_file, ml_results)
 
     total_elapsed = (time.time() - total_start) / 60
     print(f"\n{'=' * 70}")

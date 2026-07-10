@@ -652,6 +652,7 @@ def prepare_hist_data(df: pd.DataFrame) -> pd.DataFrame:
 
     # 二波启动检测需要的辅助字段
     df["昨日最高"] = df["最高"].shift(1)
+    df["昨日涨跌幅"] = df["涨跌幅"].shift(1)
     df["近5日最高收盘"] = df["收盘"].shift(1).rolling(5).max()
 
     close_arr = df["收盘"].values

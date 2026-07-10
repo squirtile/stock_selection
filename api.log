@@ -9,17 +9,5 @@ nohup: ignoring input
 
  * Serving Flask app 'api_server'
  * Debug mode: off
-WARNING: This is a development server. Do not use it in a production deployment. Use a production WSGI server instead.
- * Running on all addresses (0.0.0.0)
- * Running on http://127.0.0.1:5000
- * Running on http://10.1.0.16:5000
-Press CTRL+C to quit
-220.202.235.84 - - [10/Jul/2026 16:06:35] "GET /api/stocks HTTP/1.1" 200 -
-45.205.1.244 - - [10/Jul/2026 16:11:10] "GET / HTTP/1.1" 404 -
-104.243.35.45 - - [10/Jul/2026 16:15:24] "GET / HTTP/1.1" 404 -
-104.243.35.45 - - [10/Jul/2026 16:15:25] "GET /api/2.0/mlflow/experiments/list HTTP/1.1" 404 -
-104.243.35.45 - - [10/Jul/2026 16:15:25] "GET /v1/models HTTP/1.1" 404 -
-104.243.35.45 - - [10/Jul/2026 16:15:26] "GET /mcp HTTP/1.1" 404 -
-104.243.35.45 - - [10/Jul/2026 16:15:26] "GET /.well-known/mcp.json HTTP/1.1" 404 -
-104.243.35.45 - - [10/Jul/2026 16:15:27] "GET /.well-known/agent.json HTTP/1.1" 404 -
-104.243.35.45 - - [10/Jul/2026 16:15:27] "GET /invocations HTTP/1.1" 404 -
+Address already in use
+Port 5000 is in use by another program. Either identify and stop that program, or start the server with a different port.
