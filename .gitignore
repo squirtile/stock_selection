@@ -22,3 +22,6 @@ Thumbs.db
 
 # config
 config.py
+
+fc3d/*.csv
+fc3d/*.xlsx

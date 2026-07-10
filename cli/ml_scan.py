@@ -508,12 +508,12 @@ def main():
     os.makedirs(os.path.dirname(args.output), exist_ok=True)
 
     with pd.ExcelWriter(args.output, engine="openpyxl") as writer:
-        df.to_excel(writer, sheet_name="全部ML评分", index=False)
-        watch_df.to_excel(writer, sheet_name="可观察候选_未涨停", index=False)
+        df.head(100).to_excel(writer, sheet_name="全部ML评分", index=False)  # 保留前100供参考
+        watch_df.head(10).to_excel(writer, sheet_name="可观察候选_未涨停", index=False)
         limit_up_df.to_excel(writer, sheet_name="涨停或接近涨停", index=False)
-        signal_df.to_excel(writer, sheet_name="触发ML信号_全部", index=False)
+        signal_df.head(10).to_excel(writer, sheet_name="触发ML信号_TOP10", index=False)
         if not resonance_df.empty:
-            resonance_df.to_excel(writer, sheet_name="ML策略共振", index=False)
+            resonance_df.head(10).to_excel(writer, sheet_name="ML策略共振", index=False)
 
     print(f"\n扫描结果已保存：{args.output}")
 

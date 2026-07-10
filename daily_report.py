@@ -358,7 +358,7 @@ def build_mini_program_json(signal_file: str, ml_results: dict[str, str]) -> str
                 }
         print(f"  ML_{pkl_name}：{ml_count} 只")
 
-    # ---------- 计算综合评分并排序 ----------
+    # ---------- 计算综合评分、分类标签 ----------
     stocks_list = []
     for code, s in stocks_dict.items():
         s["score"] = _compute_stock_score(
@@ -366,6 +366,13 @@ def build_mini_program_json(signal_file: str, ml_results: dict[str, str]) -> str
             pct=s.get("pct"),
             ml_max=s.get("mlScore"),
         )
+        # 分类标签：用于小程序标签页筛选
+        categories = []
+        if (s.get("strategyCount") or 0) > 0:
+            categories.append("策略信号")
+        if s.get("mlModel"):
+            categories.append(f"ML-{s['mlModel']}")
+        s["categories"] = categories
         stocks_list.append(s)
 
     stocks_list.sort(key=lambda x: x["score"], reverse=True)
@@ -407,7 +414,7 @@ def build_email_body(signal_file: str, ml_results: dict[str, str]) -> str:
                 html += f"<h3>🔵 策略信号（{len(strategy_df)} 只）</h3>\n"
                 html += "<table border='1' cellpadding='4' cellspacing='0' style='border-collapse:collapse;font-size:12px;'>\n"
                 html += "<tr style='background:#4472C4;color:white;'>" + "".join(f"<th>{c}</th>" for c in cols) + "</tr>\n"
-                for _, row in strategy_df.head(30).iterrows():
+                for _, row in strategy_df.head(10).iterrows():
                     html += "<tr>" + "".join(f"<td>{row.get(c, '')}</td>" for c in cols) + "</tr>\n"
                 html += "</table><br>\n"
         except Exception as e:
@@ -497,9 +504,9 @@ def build_feishu_msg(signal_file: str, ml_results: dict[str, str]) -> list:
         try:
             strategy_df = pd.read_excel(signal_file, sheet_name="全部信号")
             if not strategy_df.empty:
-                strategy_lines.append(f"**🔵 策略信号：{len(strategy_df)} 只**")
+                strategy_lines.append(f"**🔵 策略信号：{len(strategy_df)} 只（TOP 10）**")
                 # 优先展示：代码 名称 | 日期 | 涨幅 | 行业 | 命中策略
-                for _, row in strategy_df.iterrows():
+                for _, row in strategy_df.head(10).iterrows():
                     code = str(row.get("代码", "")).zfill(6)
                     name = str(row.get("名称", ""))
                     date = str(row.get("K线日期", row.get("日期", "")))[:10]
