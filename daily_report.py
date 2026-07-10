@@ -375,14 +375,36 @@ def build_mini_program_json(signal_file: str, ml_results: dict[str, str]) -> str
         s["categories"] = categories
         stocks_list.append(s)
 
-    stocks_list.sort(key=lambda x: x["score"], reverse=True)
+    # ---------- 每类只取 TOP 10 ----------
+    TOP_N = 10
+    grouped: dict[str, list] = {}
+    for s in stocks_list:
+        for cat in s.get("categories", []):
+            grouped.setdefault(cat, []).append(s)
+
+    picked_codes: set = set()
+    final_stocks: list = []
+
+    # 按分类收集 TOP 10（策略信号优先，然后 ML 模型）
+    sort_order = ["策略信号"] + sorted([k for k in grouped if k != "策略信号"])
+    for cat in sort_order:
+        group = sorted(grouped.get(cat, []), key=lambda x: x["score"], reverse=True)
+        added = 0
+        for s in group:
+            if s["code"] not in picked_codes and added < TOP_N:
+                picked_codes.add(s["code"])
+                # 只保留首次选中它的分类标签（避免双确认导致重复计数）
+                s["categories"] = [cat]
+                final_stocks.append(s)
+                added += 1
+        print(f"  {cat}：取 TOP {added}（共 {len(group)} 只）")
 
     # ---------- 写 JSON ----------
     result = {
         "time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         "source": f"daily_report + {len(ml_results)} ML models",
-        "total": len(stocks_list),
-        "stocks": stocks_list,
+        "total": len(final_stocks),
+        "stocks": final_stocks,
     }
 
     with open(output_path, "w", encoding="utf-8") as f:
@@ -390,7 +412,7 @@ def build_mini_program_json(signal_file: str, ml_results: dict[str, str]) -> str
 
     print(f"  策略命中：{sum(1 for s in stocks_list if s['strategyCount'] > 0)} 只")
     print(f"  ML 命中：{sum(1 for s in stocks_list if s['mlScore'] is not None)} 只")
-    print(f"  总计：{len(stocks_list)} 只")
+    print(f"  筛选后总计：{len(final_stocks)} 只（原始 {len(stocks_list)} 只，每类 TOP 10）")
     print(f"  ✅ JSON 已生成：{output_path}")
     return output_path
 

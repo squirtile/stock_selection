@@ -81,6 +81,7 @@ def _load_stocks() -> tuple[list[dict[str, Any]], str, str]:
 
     # -- 优先读 JSON --
     json_path = _find_latest_json()
+    print(f"[API DEBUG] JSON path: {json_path}")
     if json_path is not None:
         try:
             with open(json_path, "r", encoding="utf-8") as f:
@@ -270,6 +271,84 @@ def refresh_stocks():
             "success": True,
             "message": "扫描已触发，请稍后刷新查看结果。",
             "time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        })
+    except Exception as e:
+        traceback.print_exc()
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
+@app.route("/api/stock/<code>/kline", methods=["GET"])
+def get_kline(code: str):
+    """
+    获取个股最近 30 日 K 线数据。
+
+    数据来源：cache/hist/<code>_bs.csv（BaoStock 缓存）
+
+    返回：
+    {
+        "success": true,
+        "code": "603178",
+        "name": "圣龙股份",
+        "data": [
+            {"date": "2026-05-29", "open": 15.0, "close": 15.5, "high": 15.8, "low": 14.9, "volume": 12345678},
+            ...
+        ]
+    }
+    """
+    try:
+        code = str(code).zfill(6)
+        cache_file = PROJECT_ROOT / "cache" / "hist" / f"{code}_bs.csv"
+
+        if not cache_file.exists():
+            return jsonify({"success": False, "error": f"无缓存数据: {code}"}), 404
+
+        df = pd.read_csv(cache_file, dtype={"代码": str})
+        if df.empty:
+            return jsonify({"success": False, "error": "缓存为空"}), 404
+
+        # 列名映射（兼容不同来源）
+        col_map = {
+            "date": "date",
+            "open": "open",
+            "close": "close",
+            "high": "high",
+            "low": "low",
+            "volume": "volume",
+            "amount": "amount",
+            "pctChg": "pctChg",
+        }
+        # 实际列名可能是中文
+        rename = {}
+        for eng, chn in [("date", "日期"), ("open", "开盘"), ("close", "收盘"),
+                          ("high", "最高"), ("low", "最低"), ("volume", "成交量")]:
+            if chn in df.columns:
+                rename[chn] = eng
+        if rename:
+            df = df.rename(columns=rename)
+
+        date_col = "date" if "date" in df.columns else "日期"
+        if date_col not in df.columns:
+            return jsonify({"success": False, "error": "未找到日期列"}), 500
+
+        # 转日期、排序、取最近30条
+        df[date_col] = pd.to_datetime(df[date_col], errors="coerce")
+        df = df.dropna(subset=[date_col])
+        df = df.sort_values(date_col).tail(30)
+
+        kline_data = []
+        for _, row in df.iterrows():
+            d = row[date_col]
+            date_str = d.strftime("%Y-%m-%d") if hasattr(d, "strftime") else str(d)[:10]
+            item = {"date": date_str}
+            for key in ["open", "close", "high", "low", "volume"]:
+                val = row.get(key)
+                item[key] = round(float(val), 2) if pd.notna(val) and key != "volume" else (int(val) if pd.notna(val) else 0)
+            kline_data.append(item)
+
+        return jsonify({
+            "success": True,
+            "code": code,
+            "data": kline_data,
         })
     except Exception as e:
         traceback.print_exc()
