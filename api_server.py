@@ -38,6 +38,7 @@ PROJECT_ROOT = Path(__file__).resolve().parent
 OUTPUT_DIR = PROJECT_ROOT / "output"
 SIGNAL_PATTERN = "a_stock_signal_selected_*.xlsx"
 FALLBACK_FILE = "a_stock_selected.xlsx"
+MINI_PROGRAM_JSON = "mini_program_stocks.json"  # daily_report.py 生成的 JSON
 
 app = Flask(__name__)
 
@@ -46,13 +47,18 @@ app = Flask(__name__)
 # 工具函数
 # ------------------------------
 
+def _find_latest_json() -> Path | None:
+    """优先读 daily_report.py 生成的 JSON。"""
+    path = OUTPUT_DIR / MINI_PROGRAM_JSON
+    return path if path.exists() else None
+
+
 def _find_latest_signal_file() -> Path | None:
     """找到最新的信号输出文件。"""
     pattern = str(OUTPUT_DIR / SIGNAL_PATTERN)
     files = glob.glob(pattern)
     if not files:
         return None
-    # 按修改时间排序，取最新
     files.sort(key=os.path.getmtime, reverse=True)
     return Path(files[0])
 
@@ -63,70 +69,68 @@ def _find_fallback_file() -> Path | None:
     return path if path.exists() else None
 
 
-def _compute_score(row: pd.Series) -> int:
+def _load_stocks() -> tuple[list[dict[str, Any]], str, str]:
     """
-    根据命中策略数和涨跌幅计算综合评分（0-100）。
+    加载最新选股结果，返回 (股票列表, 更新时间, 数据来源)。
+
+    优先级：
+    1. mini_program_stocks.json（daily_report.py 生成，含 ML 数据）
+    2. a_stock_signal_selected_*.xlsx（策略扫描结果）
+    3. a_stock_selected.xlsx（基础池）
     """
-    score = 50  # 基础分
 
-    # 命中策略数加分（每个策略 +8 分，上限 40）
-    strategy_count = int(row.get("命中策略数", 0) or 0)
-    score += min(strategy_count * 8, 40)
+    # -- 优先读 JSON --
+    json_path = _find_latest_json()
+    if json_path is not None:
+        try:
+            with open(json_path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            stocks = data.get("stocks", [])
+            mtime = os.path.getmtime(str(json_path))
+            update_time = datetime.fromtimestamp(mtime).strftime("%Y-%m-%d %H:%M:%S")
+            source = f"{MINI_PROGRAM_JSON} ({data.get('source', 'daily_report')})"
 
-    # 涨跌幅加分
-    pct = float(row.get("涨跌幅", 0) or 0)
-    if 2 < pct <= 5:
-        score += 5
-    elif 5 < pct <= 8:
-        score += 8
-    elif pct > 8:
-        score += 10
-    elif pct < -5:
-        score -= 10  # 跌幅过大扣分
+            # 兼容：JSON 里 score 已由 daily_report 算好，确保字段齐全
+            for s in stocks:
+                s.setdefault("score", 50)
+                s.setdefault("strategy", "")
+                s.setdefault("price", None)
+                s.setdefault("pct", None)
+                s.setdefault("industry", "")
+                s.setdefault("marketCap", None)
+                s.setdefault("concept", "")
+                s.setdefault("strategyCount", 0)
+                s.setdefault("limitUpStatus", "")
+                s.setdefault("mlScore", None)
+                s.setdefault("mlModel", "")
 
-    return max(0, min(100, int(score)))
+            return stocks, update_time, source
+        except Exception as e:
+            print(f"[API] 读取 JSON 失败：{e}，回退到 xlsx")
 
-
-def _get_strategy_text(row: pd.Series) -> str:
-    """合并策略字段为展示文本。"""
-    parts = []
-    for col in ["突破反转策略", "主升策略", "启动回踩策略", "信号类型"]:
-        val = row.get(col, "")
-        if pd.notna(val) and str(val).strip():
-            parts.append(str(val).strip())
-    return " + ".join(parts) if parts else "综合策略命中"
-
-
-def _load_stocks() -> tuple[list[dict[str, Any]], str]:
-    """
-    加载最新选股结果，返回 (股票列表, 更新时间)。
-    """
+    # -- 回退：读 xlsx --
     file_path = _find_latest_signal_file() or _find_fallback_file()
 
     if file_path is None:
-        return [], datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        return [], datetime.now().strftime("%Y-%m-%d %H:%M:%S"), "无数据"
 
     df = pd.read_excel(file_path, dtype={"代码": str})
-
     if df.empty:
-        return [], datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        return [], datetime.now().strftime("%Y-%m-%d %H:%M:%S"), "空文件"
 
-    # 格式化代码
     if "代码" in df.columns:
         df["代码"] = df["代码"].astype(str).str.zfill(6)
 
-    # 文件修改时间作为更新时间
     mtime = os.path.getmtime(str(file_path))
     update_time = datetime.fromtimestamp(mtime).strftime("%Y-%m-%d %H:%M:%S")
+    source = file_path.name
 
     stocks = []
     for _, row in df.iterrows():
         name = str(row.get("名称", ""))
         code = str(row.get("代码", ""))
-
         if not name or name == "nan":
             continue
-
         stock = {
             "code": code,
             "name": name,
@@ -145,7 +149,34 @@ def _load_stocks() -> tuple[list[dict[str, Any]], str]:
     # 按评分降序排列
     stocks.sort(key=lambda x: x["score"], reverse=True)
 
-    return stocks, update_time
+    return stocks, update_time, source
+
+
+def _compute_score(row: pd.Series) -> int:
+    """根据命中策略数和涨跌幅计算综合评分（0-100）。"""
+    score = 50
+    strategy_count = int(row.get("命中策略数", 0) or 0)
+    score += min(strategy_count * 8, 40)
+    pct = float(row.get("涨跌幅", 0) or 0)
+    if 2 < pct <= 5:
+        score += 5
+    elif 5 < pct <= 8:
+        score += 8
+    elif pct > 8:
+        score += 10
+    elif pct < -5:
+        score -= 10
+    return max(0, min(100, int(score)))
+
+
+def _get_strategy_text(row: pd.Series) -> str:
+    """合并策略字段为展示文本。"""
+    parts = []
+    for col in ["突破反转策略", "主升策略", "启动回踩策略", "信号类型"]:
+        val = row.get(col, "")
+        if pd.notna(val) and str(val).strip():
+            parts.append(str(val).strip())
+    return " + ".join(parts) if parts else "综合策略命中"
 
 
 def _safe_float(val: Any) -> float | None:
@@ -195,10 +226,7 @@ def get_stocks():
     }
     """
     try:
-        stocks, update_time = _load_stocks()
-
-        file_path = _find_latest_signal_file() or _find_fallback_file()
-        source = file_path.name if file_path else "无数据"
+        stocks, update_time, source = _load_stocks()
 
         return jsonify({
             "success": True,

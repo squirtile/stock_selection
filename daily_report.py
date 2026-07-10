@@ -195,6 +195,200 @@ def build_summary_excel(signal_file: str, ml_results: dict[str, str]) -> str:
 
 
 # ============================================================
+# 3.5 生成小程序 JSON（供 api_server.py 读取）
+# ============================================================
+
+MINI_PROGRAM_JSON = "mini_program_stocks.json"
+
+
+def _safe(val, default=""):
+    """安全取值：None / NaN → 默认值"""
+    try:
+        if val is None or (isinstance(val, float) and pd.isna(val)):
+            return default
+        return val
+    except Exception:
+        return default
+
+
+def _safe_float(val):
+    """安全转 float，失败返回 None"""
+    try:
+        if val is None or (isinstance(val, float) and pd.isna(val)):
+            return None
+        return round(float(val), 2)
+    except (ValueError, TypeError):
+        return None
+
+
+def _compute_stock_score(strategy_count: int, pct: float | None, ml_max: float | None) -> int:
+    """
+    综合评分 0-100：
+    - 策略命中 + ML 双确认 → 高分
+    - 仅策略命中 → 中分
+    - 仅 ML 命中 → 基础分
+    """
+    score = 40  # 基础分
+
+    # 策略命中加分
+    if strategy_count > 0:
+        score += min(strategy_count * 8, 32)
+
+    # ML 模型加分
+    if ml_max is not None and ml_max > 0:
+        score += min(int(ml_max * 30), 28)  # ML 最高分归一化到 0-28
+
+    # 涨幅加分
+    if pct is not None:
+        if 2 < pct <= 5:
+            score += 4
+        elif 5 < pct <= 8:
+            score += 6
+        elif pct > 8:
+            score += 8
+
+    return max(0, min(100, score))
+
+
+def _collect_strategy_text(row) -> str:
+    """合并策略字段为展示文本"""
+    parts = []
+    for col in ["突破反转策略", "主升策略", "启动回踩策略", "信号类型"]:
+        val = row.get(col, "")
+        if pd.notna(val) and str(val).strip():
+            parts.append(str(val).strip())
+    return " + ".join(parts) if parts else "综合策略命中"
+
+
+def build_mini_program_json(signal_file: str, ml_results: dict[str, str]) -> str:
+    """
+    合并策略信号 + ML 扫描结果，生成小程序可直接展示的 JSON 文件。
+
+    返回 JSON 文件路径。
+    """
+    import json
+
+    print("\n" + "=" * 70)
+    print("📱 第 3.5 步：生成小程序 JSON")
+    print("=" * 70)
+
+    output_path = os.path.join(OUTPUT_DIR, MINI_PROGRAM_JSON)
+    stocks_dict: dict[str, dict] = {}  # {代码: 合并后的股票信息}
+
+    # ---------- 从策略信号读取 ----------
+    strategy_df = pd.DataFrame()
+    if signal_file and os.path.exists(signal_file):
+        try:
+            strategy_df = pd.read_excel(signal_file, sheet_name="全部信号")
+            strategy_df["代码"] = strategy_df["代码"].astype(str).str.zfill(6)
+            print(f"  策略信号：{len(strategy_df)} 只")
+        except Exception as e:
+            print(f"  ⚠️ 读取策略信号失败：{e}")
+
+    for _, row in strategy_df.iterrows():
+        code = str(row["代码"]).zfill(6)
+        name = str(_safe(row.get("名称")))
+        if not name or name == "nan":
+            continue
+        stocks_dict[code] = {
+            "code": code,
+            "name": name,
+            "price": _safe_float(row.get("最新价")),
+            "pct": _safe_float(row.get("涨跌幅")),
+            "industry": str(_safe(row.get("行业"))),
+            "marketCap": _safe_float(row.get("市值_亿元")),
+            "concept": str(_safe(row.get("题材"))),
+            "strategy": _collect_strategy_text(row),
+            "strategyCount": int(_safe(row.get("命中策略数"), 0) or 0),
+            "limitUpStatus": str(_safe(row.get("涨停状态"))),
+            "mlScore": None,       # 待 ML 数据补齐
+            "mlModel": "",         # 命中的 ML 模型名
+        }
+
+    # ---------- 从 ML 扫描结果读取 ----------
+    for pkl_name, filepath in ml_results.items():
+        try:
+            df = pd.read_excel(filepath, sheet_name="全部ML评分")
+        except ValueError:
+            try:
+                df = pd.read_excel(filepath, sheet_name="触发ML信号_全部")
+            except ValueError:
+                continue
+
+        code_col = next((c for c in ["股票代码", "代码", "code"] if c in df.columns), None)
+        score_col = next((c for c in ["ML分数", "ML评分", "评分", "score", "信号强度", "平均相似度", "相似度"] if c in df.columns), None)
+        name_col = next((c for c in ["股票名称", "名称", "name"] if c in df.columns), None)
+
+        if not code_col or not score_col:
+            continue
+
+        df[code_col] = df[code_col].astype(str).str.zfill(6)
+        ml_count = 0
+        for _, row in df.iterrows():
+            code = str(row[code_col]).zfill(6)
+            ml_score = _safe_float(row.get(score_col))
+            if ml_score is None:
+                continue
+
+            ml_count += 1
+            if code in stocks_dict:
+                # 已存在：更新 ML 信息
+                existing = stocks_dict[code].get("mlScore")
+                if existing is None or ml_score > existing:
+                    stocks_dict[code]["mlScore"] = ml_score
+                    stocks_dict[code]["mlModel"] = pkl_name
+            else:
+                # 纯 ML 信号（无策略命中）
+                name = str(_safe(row.get(name_col))) if name_col else ""
+                if name == "nan":
+                    name = ""
+                stocks_dict[code] = {
+                    "code": code,
+                    "name": name,
+                    "price": _safe_float(row.get("收盘价") or row.get("最新价")),
+                    "pct": _safe_float(row.get("涨跌幅")),
+                    "industry": str(_safe(row.get("行业"))),
+                    "marketCap": _safe_float(row.get("市值_亿元")),
+                    "concept": "",
+                    "strategy": f"ML-{pkl_name}",
+                    "strategyCount": 0,
+                    "limitUpStatus": "",
+                    "mlScore": ml_score,
+                    "mlModel": pkl_name,
+                }
+        print(f"  ML_{pkl_name}：{ml_count} 只")
+
+    # ---------- 计算综合评分并排序 ----------
+    stocks_list = []
+    for code, s in stocks_dict.items():
+        s["score"] = _compute_stock_score(
+            strategy_count=s.get("strategyCount", 0) or 0,
+            pct=s.get("pct"),
+            ml_max=s.get("mlScore"),
+        )
+        stocks_list.append(s)
+
+    stocks_list.sort(key=lambda x: x["score"], reverse=True)
+
+    # ---------- 写 JSON ----------
+    result = {
+        "time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "source": f"daily_report + {len(ml_results)} ML models",
+        "total": len(stocks_list),
+        "stocks": stocks_list,
+    }
+
+    with open(output_path, "w", encoding="utf-8") as f:
+        json.dump(result, f, ensure_ascii=False, indent=2)
+
+    print(f"  策略命中：{sum(1 for s in stocks_list if s['strategyCount'] > 0)} 只")
+    print(f"  ML 命中：{sum(1 for s in stocks_list if s['mlScore'] is not None)} 只")
+    print(f"  总计：{len(stocks_list)} 只")
+    print(f"  ✅ JSON 已生成：{output_path}")
+    return output_path
+
+
+# ============================================================
 # 4. 发送邮件
 # ============================================================
 
@@ -439,6 +633,9 @@ def main():
 
     # 3. 合并
     summary_file = build_summary_excel(signal_file, ml_results)
+
+    # 3.5 生成小程序 JSON
+    build_mini_program_json(signal_file, ml_results)
 
     # 4. 发邮件
     send_report_email(summary_file, signal_file, ml_results)
