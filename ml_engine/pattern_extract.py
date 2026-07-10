@@ -41,6 +41,7 @@ BASE_REQUIRED_COLUMNS = [
 ]
 
 ML_INDICATOR_COLUMNS = [
+    # === 原有均线/动量特征 ===
     "收盘相对SMA5",
     "收盘相对SMA10",
     "收盘相对SMA20",
@@ -59,6 +60,15 @@ ML_INDICATOR_COLUMNS = [
     "过去20日实体振幅",
     "近15日涨停次数",
     "涨跌幅",
+    # === 新增：形状特征（捕捉W/V/圆弧等形态） ===
+    "归一化收盘",         # close / max(close in 20-day window) — 曲线轮廓
+    "归一化成交量",       # volume / max(volume in 20-day window) — 量能节奏
+    "日收益率",           # daily return — 涨跌节奏序列
+    "距20日最高%",        # (close - 20d high) / 20d high * 100 — 相对高点位置
+    "距20日最低%",        # (close - 20d low) / 20d low * 100 — 相对低点位置
+    "局部波谷标记",       # 1 if close is local minimum in ±3 day window
+    "局部波峰标记",       # 1 if close is local maximum in ±3 day window
+    "波谷深度%",          # if valley: (peak_before - valley) / peak_before * 100
 ]
 
 
@@ -107,6 +117,37 @@ def _add_ml_shape_features(df: pd.DataFrame) -> pd.DataFrame:
     df["近20日涨幅%"] = close.pct_change(20) * 100
     df["近5日量能比20日"] = _safe_ratio(df["成交量"].rolling(5).mean(), df["过去20日平均成交量"])
     df["成交额相对20日均额"] = _safe_ratio(df["成交额"], df["过去20日日均成交额"])
+
+    # ======== 新增：形状特征 ========
+    # 归一化价格 — 刻画曲线轮廓（W的两个谷、V的急跌急涨都能区分）
+    close_20d_max = close.rolling(20).max()
+    volume_20d_max = df["成交量"].rolling(20).max()
+    close_20d_min = close.rolling(20).min()
+    df["归一化收盘"] = _safe_ratio(close, close_20d_max)
+    df["归一化成交量"] = _safe_ratio(df["成交量"], volume_20d_max)
+    df["日收益率"] = close.pct_change() * 100
+    df["距20日最高%"] = _safe_ratio(close - close_20d_max, close_20d_max, 100)
+    df["距20日最低%"] = _safe_ratio(close - close_20d_min, close_20d_min, 100)
+
+    # 局部波峰/波谷标记（±3天窗口）
+    df["局部波谷标记"] = 0
+    df["局部波峰标记"] = 0
+    for i in range(3, len(df) - 3):
+        window_close = close.iloc[i-3:i+4]
+        if close.iloc[i] == window_close.min():
+            df.iloc[i, df.columns.get_loc("局部波谷标记")] = 1
+        if close.iloc[i] == window_close.max():
+            df.iloc[i, df.columns.get_loc("局部波峰标记")] = 1
+
+    # 波谷深度：从最近波峰到当前波谷的跌幅
+    df["波谷深度%"] = 0.0
+    last_peak_price = None
+    for i in range(len(df)):
+        if df.iloc[i]["局部波峰标记"] == 1:
+            last_peak_price = close.iloc[i]
+        if df.iloc[i]["局部波谷标记"] == 1 and last_peak_price and last_peak_price > 0:
+            depth = (last_peak_price - close.iloc[i]) / last_peak_price * 100
+            df.iloc[i, df.columns.get_loc("波谷深度%")] = depth
 
     for col in ML_INDICATOR_COLUMNS:
         if col not in df.columns:

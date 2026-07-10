@@ -929,55 +929,55 @@ class SecondWaveStrategy(BaseDailyStrategy):
         if close <= 0 or ma20 <= 0 or ma60 <= 0:
             return False, "价格或均线异常"
 
-        # ① 第一波涨幅 >= 20%（放宽，与数据计算阈值一致）
-        if wave < 0.20:
+        # ① 第一波大涨过：涨幅 >= 25%（过滤小波动，只要真正涨过的）
+        if wave < 0.25:
             return False, f"第一波涨幅不足({wave*100:.0f}%)"
 
-        # ② 回调 15%~55%（放宽深回调容忍度，允许更深的洗盘）
-        max_dd = 0.55
-        if dd > -0.15:
-            return False, f"回调不足({dd*100:.0f}%)"
+        # ② 回调 18%~35%（用户指定18-30%，放宽上限到35%容错）
+        #    dd = 当前价/第一波峰值 - 1，负数=在峰下面
+        max_dd = 0.35
+        if dd > -0.18:
+            return False, f"回调不足({dd*100:.0f}%，需≥18%)"
         if dd < -max_dd:
-            return False, f"回调过深({dd*100:.0f}%)"
+            return False, f"回调过深({dd*100:.0f}%，需≤35%)"
 
-        # ③ 中期均线未破位（放宽MA60条件，允许轻微跌破）
+        # ③ 中期均线支撑：MA20不能明显低于MA60，收盘不能跌破MA60太多
         if close < ma60 * 0.85:
-            return False, "跌破MA60"
-        if ma20 < ma60 * 0.90:
+            return False, "收盘跌破MA60超15%"
+        if ma20 < ma60 * 0.88:
             return False, "MA20明显低于MA60"
 
-        # ④ 缩量：近期量 <= 前波峰量80%（放宽，允许温和放量）
-        if shrink > 0.80:
-            return False, f"未缩量(比{shrink*100:.0f}%)"
+        # ④ 缩量确认：回调期量 <= 第一波均量（回调缩量是洗盘特征）
+        if shrink > 1.20:
+            return False, f"回调期未缩量(量比{shrink*100:.0f}%)"
 
-        # ⑤ 阶梯式回调（非直线崩盘）
+        # ⑤ 阶梯式回调（非必须，但非阶梯时需更严格站上MA5和MA10）
         if not stair:
-            return False, "非阶梯式回调"
+            if close < ma5 or close < ma10:
+                return False, "非阶梯回调且未站上MA5/MA10"
 
-        # ⑥ 企稳：收盘站上MA5，MA5不再加速下行（放宽MA5条件）
-        if close < ma5 * 0.98:
-            return False, "未站上MA5"
-        if ma5_d < -0.05 * close:
+        # ⑥ 企稳信号：站上MA5，MA5走平或向上
+        if close < ma5 * 0.97:
+            return False, "未企稳(收盘低于MA5)"
+        if ma5_d < -0.03 * close:
             return False, "MA5仍在下行"
 
-        # ⑦ 距前高还有空间（放宽到5%）
-        if room < 0.05:
-            return False, "距前高太近"
+        # ⑦ 距前高还有上涨空间（≥8%）
+        if room < 0.08:
+            return False, f"距前高太近({room*100:.0f}%)"
 
-        # ⑧ ★ 二波启动：回调到位 + 今天放量启动
-        # ⑧a 温和启动 0.5%~9.5%（放宽下限，允许小阳启动）
-        if pct < 0.5 or pct >= 9.5:
+        # ⑧ 二波启动确认
+        # ⑧a 涨幅 0.3%~9.5%（温和启动，不限涨停）
+        if pct < 0.3 or pct >= 9.5:
             return False, f"涨幅不匹配({pct*100:.1f}%)"
         # ⑧b 阳线
         if close <= open_:
             return False, "非阳线"
-        # ⑧c 放量启动：今日量 > 近5日均量 × 1.2（放宽，允许温和放量）
-        if vol < vol5 * 1.2:
+        # ⑧c 放量：今日量 > 近5日均量 × 1.1
+        if vol < vol5 * 1.1:
             return False, f"未放量(量比{vol/vol5:.1f})"
-        # ⑧d 突破近期整理平台：收盘 > 近5日最高收盘的95%（放宽）
-        if "近5日最高收盘" in row.index and not pd.isna(row["近5日最高收盘"]):
-            if close < float(row["近5日最高收盘"]) * 0.95:
-                return False, "未接近近期高点"
+
+        return True, "✓"
 
         return True, "✓"
 

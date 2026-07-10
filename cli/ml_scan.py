@@ -31,6 +31,53 @@ if PROJECT_ROOT not in sys.path:
 from ml_engine.ml_classifier import MLPatternModel
 from ml_engine.pattern_extract import load_candidate_codes, normalize_code, extract_indicator_matrix
 
+
+def check_strategy_resonance(codes: list[str], required_strategies: list[str] | None = None) -> dict[str, tuple[bool, str]]:
+    """
+    对给定股票列表，加载日线数据并跑全部日线策略。
+
+    Args:
+        codes: 股票代码列表
+        required_strategies: 必须命中的策略名列表，None 表示任意策略命中即可
+                             例：["二波形态"] 表示只有命中二波形态才算共振
+
+    Returns:
+        {code: (是否命中策略, 命中的策略名用逗号分隔)}
+    """
+    from strategy import prepare_hist_data
+    from strategies.registry import evaluate_daily_strategies
+
+    results: dict[str, tuple[bool, str]] = {}
+    for code in codes:
+        try:
+            file_path = os.path.join(PROJECT_ROOT, "cache", "hist", f"{normalize_code(code)}_bs.csv")
+            if not os.path.exists(file_path):
+                results[code] = (False, "无缓存")
+                continue
+            df = pd.read_csv(file_path, dtype={"代码": str})
+            if df.empty or "日期" not in df.columns:
+                results[code] = (False, "数据为空")
+                continue
+            df["日期"] = pd.to_datetime(df["日期"], errors="coerce")
+            df = df.dropna(subset=["日期"]).sort_values("日期")
+
+            df = prepare_hist_data(df)
+            latest = df.iloc[-1]
+            signals = evaluate_daily_strategies(latest)
+            if signals:
+                strategy_names = [s.strategy_name for s in signals]
+                if required_strategies:
+                    # 必须命中指定策略才算
+                    hit = any(req in strategy_names for req in required_strategies)
+                else:
+                    hit = True
+                results[code] = (hit, ", ".join(strategy_names))
+            else:
+                results[code] = (False, "无策略命中")
+        except Exception as e:
+            results[code] = (False, f"异常:{e}")
+    return results
+
 def load_stock_name_map(map_file: str = os.path.join("cache", "stock_name_map.csv")) -> dict[str, str]:
     """Load local code-name mapping from cache/stock_name_map.csv."""
     if not os.path.exists(map_file):
@@ -160,6 +207,22 @@ def check_trend_filter(df: pd.DataFrame, t: int | None = None):
     # MA60 允许轻微波动，但不能明显走弱。
     if pd.notna(prev10["MA60"]) and ma60 < float(prev10["MA60"]) * 0.995:
         return False, "MA60走弱"
+
+    # ★ 必须有回调经历：近60日内，从任一个10日前的局部高点之后，至少有8%回撤
+    #    目的：排除一路涨没回调的票（如百合花），二波形态必须"先涨→后跌→再涨"
+    recent60 = data.tail(60)
+    recent60_close = pd.to_numeric(recent60[close_col], errors="coerce")
+    if len(recent60_close) >= 30:
+        # 找过去20~40天之间的最高点（确保有足够时间回调）
+        mid_high_idx = recent60_close.iloc[-40:-10].idxmax() if len(recent60_close) >= 40 else recent60_close.iloc[:-10].idxmax()
+        if pd.notna(mid_high_idx):
+            mid_high_val = recent60_close[mid_high_idx]
+            after_mid = recent60_close.loc[mid_high_idx:]
+            after_low = after_mid.min()
+            if pd.notna(mid_high_val) and pd.notna(after_low) and mid_high_val > 0:
+                pullback_from_mid = (after_low / mid_high_val - 1) * 100
+                if pullback_from_mid > -8:
+                    return False, f"无明显回调(中期高点后最大回撤仅{pullback_from_mid:.1f}%)"
 
     recent20 = data.tail(20)
     recent20_close = pd.to_numeric(recent20[close_col], errors="coerce")
@@ -335,6 +398,7 @@ def main():
     parser.add_argument("--progress-every", type=int, default=20, help="每多少只刷新一次进度")
     parser.add_argument("--limit-up-threshold", type=float, default=9.85, help="涨停或接近涨停阈值，默认9.85")
     parser.add_argument("--trend-filter", action="store_true", help="启用趋势过滤，剔除下跌趋势、破位票、弱反抽票")
+    parser.add_argument("--strategy-resonance", action="store_true", help="ML信号 + 规则策略共振确认，只有规则策略也命中的才算有效信号")
     parser.add_argument("--name-map-file", default=os.path.join("cache", "stock_name_map.csv"), help="股票代码名称映射表，默认 cache/stock_name_map.csv")
     args = parser.parse_args()
 
@@ -400,26 +464,39 @@ def main():
         limit_up_df = pd.DataFrame(columns=list(df.columns) + ["信号分类"])
         watch_df = pd.DataFrame(columns=list(df.columns) + ["信号分类"])
 
-    print("\nML分数最高的前10只：")
-    print_df(df.head(10))
-
-    print("\n可观察候选，未涨停：")
+    print("\n🟢 可观察候选，未涨停（TOP 10）：")
     if watch_df.empty:
-        print("暂无未涨停 ML 信号。")
+        print("  暂无未涨停 ML 信号。")
     else:
+        print(f"  共 {len(watch_df)} 只，展示前 10：")
         print_df(watch_df.head(10))
 
-    print("\n涨停或接近涨停，单独观察：")
-    if limit_up_df.empty:
-        print("暂无涨停或接近涨停 ML 信号。")
-    else:
-        print_df(limit_up_df.head(10))
+    if not limit_up_df.empty:
+        print(f"\n🔴 涨停或接近涨停：{len(limit_up_df)} 只（已排除）")
 
-    print("\n触发ML信号的股票，全部：")
-    if signal_df.empty:
-        print("暂无股票达到阈值。可以降低 --threshold，比如 0.60。")
-    else:
-        print_df(signal_df)
+    # ---- 策略共振确认（可选） ----
+    resonance_df = pd.DataFrame()
+    if args.strategy_resonance and not signal_df.empty:
+        triggered_codes = signal_df["代码"].tolist()
+        resonance_map = check_strategy_resonance(triggered_codes)
+
+        signal_df["策略共振"] = signal_df["代码"].map(lambda c: resonance_map.get(c, (False, ""))[0])
+        signal_df["命中策略"] = signal_df["代码"].map(lambda c: resonance_map.get(c, (False, ""))[1])
+
+        if not watch_df.empty:
+            watch_df["策略共振"] = watch_df["代码"].map(lambda c: resonance_map.get(c, (False, ""))[0])
+            watch_df["命中策略"] = watch_df["代码"].map(lambda c: resonance_map.get(c, (False, ""))[1])
+        if not limit_up_df.empty:
+            limit_up_df["策略共振"] = limit_up_df["代码"].map(lambda c: resonance_map.get(c, (False, ""))[0])
+            limit_up_df["命中策略"] = limit_up_df["代码"].map(lambda c: resonance_map.get(c, (False, ""))[1])
+
+        resonance_df = signal_df[signal_df["策略共振"] == True].copy()
+        hit_count = len(resonance_df)
+        if hit_count > 0:
+            print(f"\n🔗 策略共振：{hit_count}/{len(triggered_codes)} 只")
+        else:
+            print(f"\n🔗 策略共振：无（{len(triggered_codes)} 只均未通过规则验证）")
+    # ---------------------------------
 
     if not args.output:
         args.output = os.path.join(
@@ -435,6 +512,8 @@ def main():
         watch_df.to_excel(writer, sheet_name="可观察候选_未涨停", index=False)
         limit_up_df.to_excel(writer, sheet_name="涨停或接近涨停", index=False)
         signal_df.to_excel(writer, sheet_name="触发ML信号_全部", index=False)
+        if not resonance_df.empty:
+            resonance_df.to_excel(writer, sheet_name="ML策略共振", index=False)
 
     print(f"\n扫描结果已保存：{args.output}")
 

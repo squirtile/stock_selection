@@ -194,8 +194,13 @@ def get_hist_data_baostock(
             )
 
             if rs.error_code != "0":
-                print(f"{code} BaoStock查询失败：{rs.error_msg}")
-                # 业务错误不重试，直接回退缓存
+                err_msg = rs.error_msg or ""
+                # 网络类错误 → 抛异常触发重试；业务错误 → 直接回退缓存
+                NETWORK_ERROR_KEYWORDS = ["网络接收", "网络", "超时", "连接", "timeout", "reset", "broken", "pipe"]
+                if any(kw in str(err_msg).lower() for kw in NETWORK_ERROR_KEYWORDS):
+                    raise ConnectionError(f"{code} BaoStock网络错误：{err_msg}")
+
+                print(f"{code} BaoStock查询失败：{err_msg}")
                 if not old_df.empty:
                     last_date = old_df["日期"].max()
                     if VERBOSE_KLINE_LOG:

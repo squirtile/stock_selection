@@ -991,45 +991,68 @@ def run_daily(args=None):
     print_signal_group_by_strategy("未涨停信号", not_limit_up_df, max_rows=50)
     print_signal_group_by_strategy("已涨停信号", limit_up_df, max_rows=50)
 
-    # 发送结果邮件
-    send_signal_email(
-        signal_output_file,
-        export_signal_df,
-        not_limit_up_df,
-        limit_up_df,
-        all_breakthrough_df,
-        all_main_promotion_df,
-    )
+    # 发送结果邮件（如果未禁用）
+    if not getattr(args, "no_email", False):
+        send_signal_email(
+            signal_output_file,
+            export_signal_df,
+            not_limit_up_df,
+            limit_up_df,
+            all_breakthrough_df,
+            all_main_promotion_df,
+        )
+    else:
+        print("已跳过邮件发送（--no-email），由上层脚本统一发送。")
 
 
 def send_signal_email(excel_path, all_df, not_limit_up_df, limit_up_df, breakthrough_df, main_promo_df):
-    """将当日选股结果通过邮件发送"""
+    """将当日选股结果通过邮件发送，按策略分组展示"""
 
     cfg = EMAIL_CONFIG
     today = datetime.now().strftime('%Y-%m-%d')
 
-    # 构建摘要
-    def build_stock_table(df, title, max_rows=15):
+    def build_strategy_table(df, title, max_rows=50):
+        """构建单个策略分组的表格"""
         if df is None or df.empty:
-            return f"<p><b>{title}</b>：无</p>"
-        rows_html = ""
-        cols = ["代码", "名称", "信号类型", "最新价", "涨跌幅", "命中策略数"]
+            return ""
+        cols = ["代码", "名称", "最新价", "涨跌幅", "行业", "命中策略数"]
         cols = [c for c in cols if c in df.columns]
-        rows_html += "<tr style='background:#4472C4;color:white;'>" + "".join(f"<th>{c}</th>" for c in cols) + "</tr>\n"
+        rows_html = "<tr style='background:#4472C4;color:white;'>" + "".join(f"<th>{c}</th>" for c in cols) + "</tr>\n"
         for _, row in df.head(max_rows).iterrows():
-            rows_html += "<tr>" + "".join(f"<td>{row.get(c, '')}</td>" for c in cols) + "</tr>\n"
-        return f"<p><b>{title}</b>（{len(df)} 只）</p><table border='1' cellpadding='4' cellspacing='0' style='border-collapse:collapse;font-size:13px;'>{rows_html}</table>"
+            pct = row.get("涨跌幅", "")
+            pct_str = f"{pct:+.2f}%" if isinstance(pct, (int, float)) and pct == pct else str(pct)
+            price = row.get("最新价", "")
+            price_str = f"{price:.2f}" if isinstance(price, (int, float)) and price == price else str(price)
+            rows_html += "<tr>"
+            for c in cols:
+                val = row.get(c, "")
+                if c == "涨跌幅":
+                    color = "red" if isinstance(val, (int, float)) and val > 0 else ("green" if isinstance(val, (int, float)) and val < 0 else "")
+                    val_str = f"<span style='color:{color};'>{pct_str}</span>" if color else pct_str
+                elif c == "最新价":
+                    val_str = price_str
+                else:
+                    val_str = str(val)
+                rows_html += f"<td>{val_str}</td>"
+            rows_html += "</tr>\n"
+        return f"<p><b>{title}</b>（{len(df)} 只）</p><table border='1' cellpadding='4' cellspacing='0' style='border-collapse:collapse;font-size:13px;'>{rows_html}</table><br>\n"
+
+    def build_section_html(df, section_title):
+        """按策略分组构建整个板块的 HTML"""
+        if df is None or df.empty:
+            return f"<h3>{section_title}</h3><p>无</p><br>\n"
+        strategy_map = split_by_specific_strategy(df)
+        html = f"<h3>{section_title}（{len(df)} 只，{len(strategy_map)} 个策略）</h3>\n"
+        for strategy_name, strategy_df in strategy_map.items():
+            html += build_strategy_table(strategy_df, f"📌 {strategy_name}")
+        return html
 
     body = f"""
     <h2>📊 A股选股结果 - {today}</h2>
+    <p>全部信号：<b>{len(all_df)}</b> 只 | 突破反转：{len(breakthrough_df)} 只 | 主升信号：{len(main_promo_df)} 只</p>
     <hr>
-    <p>全部信号：<b>{len(all_df)}</b> 只 | 未涨停：{len(not_limit_up_df)} 只 | 已涨停：{len(limit_up_df)} 只</p>
-    <p>突破反转：{len(breakthrough_df)} 只 | 主升信号：{len(main_promo_df)} 只</p>
-    <hr>
-    {build_stock_table(not_limit_up_df, '🔵 未涨停（重点关注）')}
-    <br>
-    {build_stock_table(limit_up_df, '🔴 已涨停（复盘参考）')}
-    <br>
+    {build_section_html(not_limit_up_df, '🔵 未涨停（重点关注）')}
+    {build_section_html(limit_up_df, '🔴 已涨停（复盘参考）')}
     <p style='color:#888;font-size:12px;'>完整结果见附件 Excel。本邮件由系统自动发送。</p>
     """
 
@@ -1039,7 +1062,6 @@ def send_signal_email(excel_path, all_df, not_limit_up_df, limit_up_df, breakthr
     msg["Subject"] = Header(f"A股选股结果 {today} - 共{len(all_df)}只信号", "utf-8")
     msg.attach(MIMEText(body, "html", "utf-8"))
 
-    # 附件：Excel
     if os.path.exists(excel_path):
         with open(excel_path, "rb") as f:
             part = MIMEBase("application", "octet-stream")
@@ -1198,8 +1220,14 @@ def parse_args():
     parser.add_argument(
         "--workers",
         type=int,
-        default=1,
-        help="日线扫描并发线程数，默认1（单线程）。推荐 8。注意：联网更新阶段始终单线程。",
+        default=2,
+        help="日线扫描并发线程数，默认2。建议≤CPU核数。联网更新阶段始终单线程。",
+    )
+
+    parser.add_argument(
+        "--no-email",
+        action="store_true",
+        help="跳过发送邮件（由外部脚本如 daily_report.py 统一发送时使用）。",
     )
 
     return parser.parse_args()
