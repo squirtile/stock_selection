@@ -1,0 +1,14 @@
+[Unit]
+Description=股票选股 API 服务
+After=network.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/opt/stock_selection
+ExecStart=/usr/bin/python3 api_server.py --port 5000
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

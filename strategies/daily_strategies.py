@@ -70,6 +70,7 @@ class MainBullishMAAlignmentStrategy(BaseDailyStrategy):
 
     name = "主升-均线多头排列"
     category = "主升"
+    group = "趋势跟踪"
 
     def match(self, row: pd.Series) -> bool:
         return (
@@ -98,6 +99,7 @@ class MainBigYangPullbackNoBreakStrategy(BaseDailyStrategy):
 
     name = "主升-大阳回调不破10日线"
     category = "主升"
+    group = "突破"
 
     def match(self, row: pd.Series) -> bool:
         need_cols = [
@@ -648,6 +650,7 @@ class SecondWaveStrategy(BaseDailyStrategy):
 
     name = "二波形态"
     category = "主升"
+    group = "回调买入"
 
     # ------------------------------------------------------------------
     # 子条件①：回调结构（核心，必须命中）
@@ -926,6 +929,7 @@ class SecondWaveAmbushStrategy(BaseDailyStrategy):
 
     name = "二波埋伏"
     category = "主升"
+    group = "回调买入"
 
     # ------------------------------------------------------------------
     # 埋伏条件：回调结构（不含启动确认）+ 反启动过滤
@@ -1083,6 +1087,7 @@ class AnnualLineBreakStrategy(BaseDailyStrategy):
 
     name = "年线突破"
     category = "主升"
+    group = "突破"
 
     def match(self, row: pd.Series) -> bool:
         fields = [

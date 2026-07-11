@@ -28,13 +28,14 @@ class BaseDailyStrategy(ABC):
 
     新增策略时只需要：
     1. 继承 BaseDailyStrategy
-    2. 设置 name/category/enabled
+    2. 设置 name / category / group / enabled
     3. 实现 match(row)
     4. 在 strategies/registry.py 里注册
     """
 
     name: str = "未命名策略"
     category: str = "其他"
+    group: str = ""          # 策略分组，如"趋势跟踪"/"回调买入"/"突破"，用于小程序多级标签
     enabled: bool = True
 
     @abstractmethod

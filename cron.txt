@@ -1,0 +1,5 @@
+# 每个交易日 17:30 执行每日选股报告（收盘后）
+# 编辑方式：crontab -e
+# 查看日志：tail -f /var/log/stock_daily.log
+
+30 17 * * 1-5 cd /opt/stock_selection && /usr/bin/python3 daily_report.py --no-email >> /var/log/stock_daily.log 2>&1

@@ -69,7 +69,7 @@ def _find_fallback_file() -> Path | None:
     return path if path.exists() else None
 
 
-def _load_stocks() -> tuple[list[dict[str, Any]], str, str]:
+def _load_stocks() -> tuple[list[dict[str, Any]], str, str, list[dict]]:
     """
     加载最新选股结果，返回 (股票列表, 更新时间, 数据来源)。
 
@@ -87,6 +87,7 @@ def _load_stocks() -> tuple[list[dict[str, Any]], str, str]:
             with open(json_path, "r", encoding="utf-8") as f:
                 data = json.load(f)
             stocks = data.get("stocks", [])
+            tab_groups = data.get("tabGroups", [])
             mtime = os.path.getmtime(str(json_path))
             update_time = datetime.fromtimestamp(mtime).strftime("%Y-%m-%d %H:%M:%S")
             source = f"{MINI_PROGRAM_JSON} ({data.get('source', 'daily_report')})"
@@ -104,8 +105,11 @@ def _load_stocks() -> tuple[list[dict[str, Any]], str, str]:
                 s.setdefault("limitUpStatus", "")
                 s.setdefault("mlScore", None)
                 s.setdefault("mlModel", "")
+                s.setdefault("strategyTypes", [])
+                s.setdefault("mlModels", [])
+                s.setdefault("categories", [])
 
-            return stocks, update_time, source
+            return stocks, update_time, source, tab_groups
         except Exception as e:
             print(f"[API] 读取 JSON 失败：{e}，回退到 xlsx")
 
@@ -113,11 +117,11 @@ def _load_stocks() -> tuple[list[dict[str, Any]], str, str]:
     file_path = _find_latest_signal_file() or _find_fallback_file()
 
     if file_path is None:
-        return [], datetime.now().strftime("%Y-%m-%d %H:%M:%S"), "无数据"
+        return [], datetime.now().strftime("%Y-%m-%d %H:%M:%S"), "无数据", []
 
     df = pd.read_excel(file_path, dtype={"代码": str})
     if df.empty:
-        return [], datetime.now().strftime("%Y-%m-%d %H:%M:%S"), "空文件"
+        return [], datetime.now().strftime("%Y-%m-%d %H:%M:%S"), "空文件", []
 
     if "代码" in df.columns:
         df["代码"] = df["代码"].astype(str).str.zfill(6)
@@ -144,13 +148,16 @@ def _load_stocks() -> tuple[list[dict[str, Any]], str, str]:
             "concept": str(row.get("题材", "")) if pd.notna(row.get("题材")) else "",
             "strategyCount": int(row.get("命中策略数", 0) or 0),
             "limitUpStatus": str(row.get("涨停状态", "")) if pd.notna(row.get("涨停状态")) else "",
+            "strategyTypes": [],
+            "mlModels": [],
+            "categories": ["策略信号"] if int(row.get("命中策略数", 0) or 0) > 0 else [],
         }
         stocks.append(stock)
 
     # 按评分降序排列
     stocks.sort(key=lambda x: x["score"], reverse=True)
 
-    return stocks, update_time, source
+    return stocks, update_time, source, []
 
 
 def _compute_score(row: pd.Series) -> int:
@@ -227,7 +234,7 @@ def get_stocks():
     }
     """
     try:
-        stocks, update_time, source = _load_stocks()
+        stocks, update_time, source, tab_groups = _load_stocks()
 
         return jsonify({
             "success": True,
@@ -235,6 +242,7 @@ def get_stocks():
             "source": source,
             "total": len(stocks),
             "stocks": stocks,
+            "tabGroups": tab_groups,
         })
     except Exception as e:
         traceback.print_exc()

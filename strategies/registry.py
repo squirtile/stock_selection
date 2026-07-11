@@ -32,6 +32,26 @@ def get_daily_strategies() -> list[BaseDailyStrategy]:
     ]
 
 
+def get_strategy_type_map() -> dict[str, dict[str, str]]:
+    """
+    返回策略名 → 分组信息的映射，供 daily_report.py 动态读取。
+
+    返回格式：{"主升-均线多头排列": {"group": "趋势跟踪", "groupKey": "趋势跟踪"}, ...}
+
+    新增策略只需在 daily_strategies.py 中设置 group 属性并在此注册即可，
+    无需修改 daily_report.py。
+    """
+    import re
+    result = {}
+    for s in get_daily_strategies():
+        group = getattr(s, "group", "") or s.category
+        result[s.name] = {
+            "group": group,
+            "groupKey": group,  # 直接用中文分组名作为 key
+        }
+    return result
+
+
 def evaluate_daily_strategies(row) -> list[StrategySignal]:
     signals: list[StrategySignal] = []
 

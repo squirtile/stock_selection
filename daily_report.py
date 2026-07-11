@@ -200,6 +200,82 @@ def build_summary_excel(signal_file: str, ml_results: dict[str, str]) -> str:
 
 MINI_PROGRAM_JSON = "mini_program_stocks.json"
 
+# ============================================================
+# 动态策略映射（从 registry.py 自动读取，新增策略无需改这里）
+# ============================================================
+
+def _get_strategy_type_map() -> dict[str, dict[str, str]]:
+    """从 registry.py 动态读取策略名→分组映射。"""
+    try:
+        from strategies.registry import get_strategy_type_map
+        return get_strategy_type_map()
+    except Exception:
+        # 回退硬编码（兼容旧版）
+        return {
+            "主升-均线多头排列":       {"group": "趋势跟踪", "groupKey": "趋势跟踪"},
+            "二波埋伏":                {"group": "回调买入", "groupKey": "回调买入"},
+            "二波形态":                {"group": "回调买入", "groupKey": "回调买入"},
+            "主升-大阳回调不破10日线": {"group": "突破",     "groupKey": "突破"},
+            "年线突破":                {"group": "突破",     "groupKey": "突破"},
+        }
+
+
+def _get_strategy_group_order() -> list[str]:
+    """从 registry.py 读取策略分组顺序（按注册顺序，去重）。"""
+    try:
+        from strategies.registry import get_daily_strategies
+        seen = []
+        for s in get_daily_strategies():
+            gk = getattr(s, "group", "") or s.category
+            if gk and gk not in seen:
+                seen.append(gk)
+        return seen
+    except Exception:
+        return ["趋势跟踪", "回调买入", "突破"]
+
+
+def _get_ml_model_display(pkl_name: str) -> str:
+    """获取 ML 模型的显示名称（从文件名推导，可在此手动覆盖特殊命名）。"""
+    # 特殊命名覆盖（文件名 → 显示名）
+    overrides = {
+        "W_V2":       "W双底",
+        "二波形态_v1": "二波形态",
+    }
+    if pkl_name in overrides:
+        return overrides[pkl_name]
+    # 默认：去掉 _v1/_v2 后缀和下划线
+    import re
+    name = re.sub(r"[_\-]\s*v?\d+$", "", pkl_name)
+    return name.replace("_", " ").strip() or pkl_name
+
+
+def _parse_strategy_types(row) -> list[dict]:
+    """从 Excel 行中提取具体的策略名称列表，映射到分组。
+
+    返回: [{"group": "回调买入", "groupKey": "回调买入", "name": "二波形态"}, ...]
+    """
+    import re
+    strategy_map = _get_strategy_type_map()
+    result = []
+    for col in ["主升策略", "突破反转策略"]:
+        val = row.get(col, "")
+        if pd.isna(val) or not str(val).strip():
+            continue
+        # 拆分多策略组合（分隔符可能是 " + "、"、", " 等）
+        parts = re.split(r"\s*\+\s*|\s*、\s*|\s*,\s*", str(val).strip())
+        for name in parts:
+            name = name.strip()
+            if not name:
+                continue
+            info = strategy_map.get(name)
+            if info:
+                result.append({
+                    "group": info["group"],
+                    "groupKey": info["groupKey"],
+                    "name": name,
+                })
+    return result
+
 
 def _safe(val, default=""):
     """安全取值：None / NaN → 默认值"""
@@ -250,8 +326,12 @@ def _compute_stock_score(strategy_count: int, pct: float | None, ml_max: float |
     return max(0, min(100, score))
 
 
-def _collect_strategy_text(row) -> str:
-    """合并策略字段为展示文本"""
+def _collect_strategy_text(row, strategy_types: list[dict]) -> str:
+    """合并策略字段为展示文本（只显示具体策略名，不显示冗余的"主升"等分类）"""
+    names = [s["name"] for s in strategy_types]
+    if names:
+        return " + ".join(names)
+    # 回退：旧式多列合并
     parts = []
     for col in ["突破反转策略", "主升策略", "启动回踩策略", "信号类型"]:
         val = row.get(col, "")
@@ -290,6 +370,7 @@ def build_mini_program_json(signal_file: str, ml_results: dict[str, str]) -> str
         name = str(_safe(row.get("名称")))
         if not name or name == "nan":
             continue
+        strategy_types = _parse_strategy_types(row)
         stocks_dict[code] = {
             "code": code,
             "name": name,
@@ -298,14 +379,18 @@ def build_mini_program_json(signal_file: str, ml_results: dict[str, str]) -> str
             "industry": str(_safe(row.get("行业"))),
             "marketCap": _safe_float(row.get("市值_亿元")),
             "concept": str(_safe(row.get("题材"))),
-            "strategy": _collect_strategy_text(row),
+            "strategy": _collect_strategy_text(row, strategy_types),
             "strategyCount": int(_safe(row.get("命中策略数"), 0) or 0),
+            "strategyTypes": strategy_types,
             "limitUpStatus": str(_safe(row.get("涨停状态"))),
             "mlScore": None,       # 待 ML 数据补齐
             "mlModel": "",         # 命中的 ML 模型名
+            "mlModels": [],        # ML 模型列表
         }
 
     # ---------- 从 ML 扫描结果读取 ----------
+    # 收集所有出现过的 ML 模型
+    all_ml_models: dict[str, str] = {}  # {pkl_name: displayName}
     for pkl_name, filepath in ml_results.items():
         try:
             df = pd.read_excel(filepath, sheet_name="全部ML评分")
@@ -324,6 +409,9 @@ def build_mini_program_json(signal_file: str, ml_results: dict[str, str]) -> str
 
         df[code_col] = df[code_col].astype(str).str.zfill(6)
         ml_count = 0
+        display_name = _get_ml_model_display(pkl_name)
+        all_ml_models[pkl_name] = display_name
+
         for _, row in df.iterrows():
             code = str(row[code_col]).zfill(6)
             ml_score = _safe_float(row.get(score_col))
@@ -331,12 +419,17 @@ def build_mini_program_json(signal_file: str, ml_results: dict[str, str]) -> str
                 continue
 
             ml_count += 1
+            ml_model_info = {"key": pkl_name, "displayName": display_name, "score": ml_score}
+
             if code in stocks_dict:
-                # 已存在：更新 ML 信息
-                existing = stocks_dict[code].get("mlScore")
-                if existing is None or ml_score > existing:
-                    stocks_dict[code]["mlScore"] = ml_score
-                    stocks_dict[code]["mlModel"] = pkl_name
+                # 已存在：追加 ML 信息（支持多模型命中）
+                existing = stocks_dict[code]
+                existing["mlModels"] = existing.get("mlModels", [])
+                existing["mlModels"].append(ml_model_info)
+                # 保留最高分的 ML 模型作为主模型
+                if existing.get("mlScore") is None or ml_score > existing["mlScore"]:
+                    existing["mlScore"] = ml_score
+                    existing["mlModel"] = pkl_name
             else:
                 # 纯 ML 信号（无策略命中）
                 name = str(_safe(row.get(name_col))) if name_col else ""
@@ -350,13 +443,15 @@ def build_mini_program_json(signal_file: str, ml_results: dict[str, str]) -> str
                     "industry": str(_safe(row.get("行业"))),
                     "marketCap": _safe_float(row.get("市值_亿元")),
                     "concept": "",
-                    "strategy": f"ML-{pkl_name}",
+                    "strategy": f"ML-{display_name}",
                     "strategyCount": 0,
+                    "strategyTypes": [],
                     "limitUpStatus": "",
                     "mlScore": ml_score,
                     "mlModel": pkl_name,
+                    "mlModels": [ml_model_info],
                 }
-        print(f"  ML_{pkl_name}：{ml_count} 只")
+        print(f"  ML_{pkl_name}（{display_name}）：{ml_count} 只")
 
     # ---------- 计算综合评分、分类标签 ----------
     stocks_list = []
@@ -366,44 +461,130 @@ def build_mini_program_json(signal_file: str, ml_results: dict[str, str]) -> str
             pct=s.get("pct"),
             ml_max=s.get("mlScore"),
         )
-        # 分类标签：用于小程序标签页筛选
-        categories = []
+
+        # 确保必要字段存在
+        s.setdefault("strategyTypes", [])
+        s.setdefault("mlModels", [])
+
+        # 构建层级分类标签
+        # Level 1 categories: "策略信号", "ML模型信号"
+        categories_level1 = []
         if (s.get("strategyCount") or 0) > 0:
-            categories.append("策略信号")
-        if s.get("mlModel"):
-            categories.append(f"ML-{s['mlModel']}")
-        s["categories"] = categories
+            categories_level1.append("策略信号")
+        if s.get("mlModels"):
+            categories_level1.append("ML模型信号")
+
+        s["categories"] = categories_level1
         stocks_list.append(s)
 
-    # ---------- 每类只取 TOP 10 ----------
+    # ---------- 每类只取 TOP 10（按二级分组：每个策略分组/每个ML模型各取10只）----------
     TOP_N = 10
-    grouped: dict[str, list] = {}
+    # 按二级分组（groupKey / mlModel key），一只股票可属多个二级分组
+    level2_groups: dict[str, list] = {}  # {groupKey: [stocks]}
     for s in stocks_list:
-        for cat in s.get("categories", []):
-            grouped.setdefault(cat, []).append(s)
+        for st in s.get("strategyTypes", []):
+            gk = st["groupKey"]
+            level2_groups.setdefault(gk, []).append(s)
+        for ml in s.get("mlModels", []):
+            gk = ml["key"]
+            level2_groups.setdefault(gk, []).append(s)
 
     picked_codes: set = set()
     final_stocks: list = []
 
-    # 按分类收集 TOP 10（策略信号优先，然后 ML 模型）
-    sort_order = ["策略信号"] + sorted([k for k in grouped if k != "策略信号"])
-    for cat in sort_order:
-        group = sorted(grouped.get(cat, []), key=lambda x: x["score"], reverse=True)
+    # 排序：策略分组优先（按 registry 注册顺序），然后 ML 模型按字母
+    strategy_group_order = _get_strategy_group_order()
+    ml_model_keys = sorted([k for k in level2_groups if k not in strategy_group_order])
+    sort_order = [k for k in strategy_group_order if k in level2_groups] + ml_model_keys
+
+    for gk in sort_order:
+        group = sorted(level2_groups[gk], key=lambda x: x["score"], reverse=True)
         added = 0
         for s in group:
             if s["code"] not in picked_codes and added < TOP_N:
                 picked_codes.add(s["code"])
-                # 只保留首次选中它的分类标签（避免双确认导致重复计数）
-                s["categories"] = [cat]
                 final_stocks.append(s)
                 added += 1
-        print(f"  {cat}：取 TOP {added}（共 {len(group)} 只）")
+        print(f"  {gk}：取 TOP {added}（共 {len(group)} 只）")
+
+    # ---------- 构建层级 Tab 结构（基于最终筛选结果） ----------
+    strategy_groups_seen: dict[str, dict] = {}
+    ml_models_seen: dict[str, dict] = {}
+
+    for s in final_stocks:
+        for st in s.get("strategyTypes", []):
+            gk = st.get("groupKey", "other")
+            if gk not in strategy_groups_seen:
+                strategy_groups_seen[gk] = {
+                    "group": st["group"],
+                    "groupKey": gk,
+                    "count": 0,
+                }
+            strategy_groups_seen[gk]["count"] += 1
+
+        for ml in s.get("mlModels", []):
+            key = ml["key"]
+            if key not in ml_models_seen:
+                ml_models_seen[key] = {
+                    "key": key,
+                    "displayName": ml["displayName"],
+                    "count": 0,
+                }
+            ml_models_seen[key]["count"] += 1
+
+    tab_groups = []
+
+    # 策略信号 tab 组（按 registry 注册顺序排列子标签）
+    strategy_children = []
+    strategy_group_order = _get_strategy_group_order()
+    for gk in strategy_group_order:
+        if gk in strategy_groups_seen:
+            info = strategy_groups_seen[gk]
+            strategy_children.append({
+                "key": gk,
+                "label": info["group"],
+                "count": info["count"],
+            })
+    for gk, info in strategy_groups_seen.items():
+        if gk not in strategy_group_order:
+            strategy_children.append({
+                "key": gk,
+                "label": info["group"],
+                "count": info["count"],
+            })
+
+    strategy_signal_count = sum(1 for s in final_stocks if "策略信号" in s.get("categories", []))
+    if strategy_signal_count > 0:
+        tab_groups.append({
+            "key": "策略信号",
+            "label": "策略信号",
+            "count": strategy_signal_count,
+            "children": strategy_children,
+        })
+
+    # ML 模型信号 tab 组
+    ml_children = []
+    for key, info in ml_models_seen.items():
+        ml_children.append({
+            "key": key,
+            "label": info["displayName"],
+            "count": info["count"],
+        })
+    ml_signal_count = sum(1 for s in final_stocks if "ML模型信号" in s.get("categories", []))
+    if ml_signal_count > 0:
+        tab_groups.append({
+            "key": "ML模型信号",
+            "label": "ML模型信号",
+            "count": ml_signal_count,
+            "children": ml_children,
+        })
 
     # ---------- 写 JSON ----------
     result = {
         "time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         "source": f"daily_report + {len(ml_results)} ML models",
         "total": len(final_stocks),
+        "tabGroups": tab_groups,
         "stocks": final_stocks,
     }
 
@@ -413,6 +594,7 @@ def build_mini_program_json(signal_file: str, ml_results: dict[str, str]) -> str
     print(f"  策略命中：{sum(1 for s in stocks_list if s['strategyCount'] > 0)} 只")
     print(f"  ML 命中：{sum(1 for s in stocks_list if s['mlScore'] is not None)} 只")
     print(f"  筛选后总计：{len(final_stocks)} 只（原始 {len(stocks_list)} 只，每类 TOP 10）")
+    print(f"  Tab 层级：{len(tab_groups)} 个一级分组")
     print(f"  ✅ JSON 已生成：{output_path}")
     return output_path
 
