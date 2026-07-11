@@ -650,7 +650,7 @@ class SecondWaveStrategy(BaseDailyStrategy):
 
     name = "二波形态"
     category = "主升"
-    group = "回调买入"
+    group = "二波形态"
 
     # ------------------------------------------------------------------
     # 子条件①：回调结构（核心，必须命中）
@@ -701,11 +701,11 @@ class SecondWaveStrategy(BaseDailyStrategy):
         if dd < -max_dd:
             return False, f"回调过深({dd*100:.0f}%，需≤35%)"
 
-        # ③ 中期均线支撑：MA20不能明显低于MA60，收盘不能跌破MA60太多
-        if close < ma60 * 0.85:
-            return False, "收盘跌破MA60超15%"
-        if ma20 < ma60 * 0.88:
-            return False, "MA20明显低于MA60"
+        # ③ 趋势确认：必须处于上升趋势，收盘在 MA60 上方（排除下跌通道中的票）
+        if ma20 < ma60:
+            return False, "SMA20低于SMA60(下跌趋势)"
+        if close < ma60:
+            return False, f"收盘低于MA60({(close/ma60-1)*100:.0f}%，非上升趋势)"
 
         # ④ 缩量确认：回调期量 <= 第一波均量（回调缩量是洗盘特征）
         if shrink > 1.20:
@@ -929,7 +929,7 @@ class SecondWaveAmbushStrategy(BaseDailyStrategy):
 
     name = "二波埋伏"
     category = "主升"
-    group = "回调买入"
+    group = "二波埋伏"
 
     # ------------------------------------------------------------------
     # 埋伏条件：回调结构（不含启动确认）+ 反启动过滤
@@ -981,11 +981,11 @@ class SecondWaveAmbushStrategy(BaseDailyStrategy):
         if dd < -max_dd:
             return False, f"回调过深({dd*100:.0f}%，需≤35%)"
 
-        # ③ 中期均线支撑
-        if close < ma60 * 0.85:
-            return False, "收盘跌破MA60超15%"
-        if ma20 < ma60 * 0.88:
-            return False, "MA20明显低于MA60"
+        # ③ 趋势确认：必须处于上升趋势，收盘在 MA60 上方（排除下跌通道中的票）
+        if ma20 < ma60:
+            return False, "SMA20低于SMA60(下跌趋势)"
+        if close < ma60:
+            return False, f"收盘低于MA60({(close/ma60-1)*100:.0f}%，非上升趋势)"
 
         # ④ 缩量确认
         if shrink > 1.20:

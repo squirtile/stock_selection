@@ -22,8 +22,10 @@ def get_daily_strategies() -> list[BaseDailyStrategy]:
         # 趋势跟踪
         MainBullishMAAlignmentStrategy(),
 
-        # 回调买入
+        # 二波埋伏
         SecondWaveAmbushStrategy(),
+
+        # 二波形态
         SecondWaveStrategy(),
 
         # 突破

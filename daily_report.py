@@ -508,8 +508,8 @@ def build_mini_program_json(signal_file: str, ml_results: dict[str, str]) -> str
         print(f"  {gk}：取 TOP {added}（共 {len(group)} 只）")
 
     # ---------- 构建层级 Tab 结构（基于最终筛选结果） ----------
-    strategy_groups_seen: dict[str, dict] = {}
-    ml_models_seen: dict[str, dict] = {}
+    strategy_groups_seen: dict[str, dict] = {}   # {groupKey: {group, codes: set}}
+    ml_models_seen: dict[str, dict] = {}          # {key: {key, displayName, codes: set}}
 
     for s in final_stocks:
         for st in s.get("strategyTypes", []):
@@ -518,9 +518,9 @@ def build_mini_program_json(signal_file: str, ml_results: dict[str, str]) -> str
                 strategy_groups_seen[gk] = {
                     "group": st["group"],
                     "groupKey": gk,
-                    "count": 0,
+                    "codes": set(),
                 }
-            strategy_groups_seen[gk]["count"] += 1
+            strategy_groups_seen[gk]["codes"].add(s["code"])
 
         for ml in s.get("mlModels", []):
             key = ml["key"]
@@ -528,10 +528,12 @@ def build_mini_program_json(signal_file: str, ml_results: dict[str, str]) -> str
                 ml_models_seen[key] = {
                     "key": key,
                     "displayName": ml["displayName"],
-                    "count": 0,
+                    "codes": set(),
                 }
-            ml_models_seen[key]["count"] += 1
+            ml_models_seen[key]["codes"].add(s["code"])
 
+    # 计算每类最多显示的只数（上限 TOP_N）
+    TOP_N = 10
     tab_groups = []
 
     # 策略信号 tab 组（按 registry 注册顺序排列子标签）
@@ -540,42 +542,52 @@ def build_mini_program_json(signal_file: str, ml_results: dict[str, str]) -> str
     for gk in strategy_group_order:
         if gk in strategy_groups_seen:
             info = strategy_groups_seen[gk]
+            actual = len(info["codes"])
             strategy_children.append({
                 "key": gk,
                 "label": info["group"],
-                "count": info["count"],
+                "count": min(actual, TOP_N),
             })
     for gk, info in strategy_groups_seen.items():
         if gk not in strategy_group_order:
+            actual = len(info["codes"])
             strategy_children.append({
                 "key": gk,
                 "label": info["group"],
-                "count": info["count"],
+                "count": min(actual, TOP_N),
             })
 
-    strategy_signal_count = sum(1 for s in final_stocks if "策略信号" in s.get("categories", []))
-    if strategy_signal_count > 0:
+    strategy_codes = set()
+    for info in strategy_groups_seen.values():
+        strategy_codes |= info["codes"]
+    if strategy_codes:
         tab_groups.append({
             "key": "策略信号",
             "label": "策略信号",
-            "count": strategy_signal_count,
+            "count": len(strategy_codes),
             "children": strategy_children,
         })
 
     # ML 模型信号 tab 组
     ml_children = []
     for key, info in ml_models_seen.items():
+        actual = len(info["codes"])
         ml_children.append({
             "key": key,
             "label": info["displayName"],
-            "count": info["count"],
+            "count": min(actual, TOP_N),
         })
-    ml_signal_count = sum(1 for s in final_stocks if "ML模型信号" in s.get("categories", []))
-    if ml_signal_count > 0:
+    ml_codes = set()
+    for info in ml_models_seen.values():
+        ml_codes |= info["codes"]
+    if ml_codes:
+        ml_count = len(ml_codes)
+        # 一级标签数量不超过"模型数 × TOP_N"
+        ml_count = min(ml_count, len(ml_models_seen) * TOP_N)
         tab_groups.append({
             "key": "ML模型信号",
             "label": "ML模型信号",
-            "count": ml_signal_count,
+            "count": ml_count,
             "children": ml_children,
         })
 

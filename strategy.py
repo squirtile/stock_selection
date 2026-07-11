@@ -644,11 +644,15 @@ def prepare_hist_data(df: pd.DataFrame) -> pd.DataFrame:
 
     # =====================================================================
     # 二波形态策略辅助字段（改进版）
-    # 样本：天创时尚603608、福达合金、黄河旋风600172
     #
-    # 核心思路：先找到"第一波峰值"（距今15~80天内、之前有30%+涨幅的
-    # 趋势高点），再基于这个真实峰值计算回调幅度、缩量比、阶梯特征。
+    # 脉冲过滤开关：过滤掉单日暴拉的假峰值（如一日涨停后次日崩回）
+    # 设为 False 可关闭，恢复原始峰值检测
     # =====================================================================
+    ENABLE_PULSE_FILTER = True      # 是否过滤脉冲假峰
+    PULSE_MAX_RATIO   = 1.08        # 峰值超过前后3天均价8%以上视为脉冲
+    ENABLE_COMPLETED_WAVE_FILTER = True  # 是否过滤"二波已走完"的票
+    COMPLETED_WAVE_RECOVERY = 0.60       # 峰后反弹超过跌幅60%视为可能已完成
+    COMPLETED_WAVE_DROPOFF  = 0.12       # 且当前价低于反弹高点12%以上 → 确认已走完
 
     # 二波启动检测需要的辅助字段
     df["昨日最高"] = df["最高"].shift(1)
@@ -656,10 +660,12 @@ def prepare_hist_data(df: pd.DataFrame) -> pd.DataFrame:
     df["近5日最高收盘"] = df["收盘"].shift(1).rolling(5).max()
 
     close_arr = df["收盘"].values
-    ma5_arr = df["SMA5"].values
-    ma20_arr = df["SMA20"].values
-    vol_arr = df["成交量"].values
-    pct_arr = df["涨跌幅"].values
+    high_arr  = df["最高"].values
+    low_arr   = df["最低"].values
+    ma5_arr   = df["SMA5"].values
+    ma20_arr  = df["SMA20"].values
+    vol_arr   = df["成交量"].values
+    pct_arr   = df["涨跌幅"].values
 
     n = len(df)
     wave_peak_prices    = np.full(n, np.nan)
@@ -676,38 +682,72 @@ def prepare_hist_data(df: pd.DataFrame) -> pd.DataFrame:
         if i < 60 or pd.isna(close_arr[i]):
             continue
 
-        # ---- 第一步：在 [15, 80] 天前区间找第一波峰值 ----
-        peak_start = max(0, i - 80)
-        peak_end   = max(0, i - 15)
-        if peak_end <= peak_start + 10:
+        # ---- 第一步：在 [3, 30] 天前区间找第一波峰值（用最高价）----
+        peak_start = max(0, i - 30)
+        peak_end   = max(0, i - 3)
+        if peak_end <= peak_start + 3:
             continue
 
-        peak_idx_in_range = peak_start + np.argmax(close_arr[peak_start:peak_end])
-        peak_price = close_arr[peak_idx_in_range]
+        peak_idx_in_range = peak_start + np.argmax(high_arr[peak_start:peak_end])
+        peak_price = high_arr[peak_idx_in_range]  # 用最高价作为峰值
 
         if pd.isna(peak_price) or peak_price <= 0:
             continue
 
-        # ---- 第二步：峰值之前找一波起涨点（峰值往前20~60天的低点）----
-        base_start = max(0, peak_idx_in_range - 60)
-        base_end   = max(0, peak_idx_in_range - 20)
-        if base_end <= base_start + 5:
+        # ---- 脉冲过滤：排除单日暴拉的假峰，找下一个真正的峰 ----
+        if ENABLE_PULSE_FILTER:
+            # 取窗口内所有候选峰值（从高到低），找到第一个非脉冲的
+            window_highs = high_arr[peak_start:peak_end]
+            candidate_indices = np.argsort(window_highs)[::-1]  # 从高到低排序
+            found_real_peak = False
+            for cand_offset in candidate_indices:
+                cand_idx = peak_start + cand_offset
+                cand_price = high_arr[cand_idx]
+                if pd.isna(cand_price):
+                    continue
+                # 比较候选峰和前后3天的均价
+                neighbors = []
+                for offset in [-3, -2, -1, 1, 2, 3]:
+                    ni = cand_idx + offset
+                    if 0 <= ni < n and not pd.isna(high_arr[ni]):
+                        neighbors.append(high_arr[ni])
+                if len(neighbors) >= 3:
+                    neighbor_avg = np.mean(neighbors)
+                    if cand_price <= neighbor_avg * PULSE_MAX_RATIO:
+                        # 不是脉冲峰，采纳
+                        peak_idx_in_range = cand_idx
+                        peak_price = cand_price
+                        found_real_peak = True
+                        break
+                else:
+                    # 邻居不够，放宽条件直接采纳
+                    peak_idx_in_range = cand_idx
+                    peak_price = cand_price
+                    found_real_peak = True
+                    break
+            if not found_real_peak:
+                continue  # 整个窗口都是脉冲，跳过这只票
+
+        # ---- 第二步：峰值之前找一波起涨点（用最低价）----
+        base_start = max(0, peak_idx_in_range - 30)
+        base_end   = max(0, peak_idx_in_range - 5)
+        if base_end <= base_start + 3:
             continue
 
-        base_idx = base_start + np.argmin(close_arr[base_start:base_end])
-        base_price = close_arr[base_idx]
+        base_idx = base_start + np.argmin(low_arr[base_start:base_end])
+        base_price = low_arr[base_idx]  # 用最低价作为起涨点
 
         if pd.isna(base_price) or base_price <= 0:
             continue
 
         wave_gain = peak_price / base_price - 1
-        if wave_gain < 0.20:  # 第一波至少涨20%
+        if wave_gain < 0.30:  # 第一波至少涨30%（参考6只模板：最低34%）
             continue
 
         # ---- 第三步：验证第一波期间 MA5 > MA20 的天数占比 ----
         wave_slice = slice(base_idx, peak_idx_in_range + 1)
         wave_len = peak_idx_in_range - base_idx + 1
-        if wave_len < 8:
+        if wave_len < 5:  # 一浪至少5天（模板最低7天）
             continue
 
         ma5_seg = ma5_arr[wave_slice]
@@ -722,8 +762,27 @@ def prepare_hist_data(df: pd.DataFrame) -> pd.DataFrame:
 
         # ---- 第四步：从峰值到当前的回调特征 ----
         pullback_len = i - peak_idx_in_range
-        if pullback_len < 8:
+        if pullback_len < 3:   # 回调至少3天（模板最低3天）
             continue
+        if pullback_len > 20:  # 回调最长20天（模板最长15天，放宽到20天）
+            continue
+
+        # ---- 第五步：过滤已走完二波的票 ----
+        # 条件：反弹超过阈值 + 当前价已从反弹高点回落 → 二波已结束
+        if ENABLE_COMPLETED_WAVE_FILTER:
+            post_highs = high_arr[peak_idx_in_range + 1:i + 1] if i > peak_idx_in_range else np.array([peak_price])
+            post_lows_raw = low_arr[peak_idx_in_range + 1:i + 1] if i > peak_idx_in_range else np.array([peak_price])
+            if len(post_lows_raw) > 0 and len(post_highs) > 0:
+                trough_val = np.min(post_lows_raw)
+                t_idx = np.argmin(post_lows_raw)
+                after_trough = post_highs[t_idx:]
+                recovery_high = np.max(after_trough) if len(after_trough) > 0 else trough_val
+                if peak_price > trough_val:
+                    ratio = (recovery_high - trough_val) / (peak_price - trough_val)
+                    current_close = close_arr[i]
+                    dropped = current_close < recovery_high * (1 - COMPLETED_WAVE_DROPOFF)
+                    if ratio >= COMPLETED_WAVE_RECOVERY and dropped:
+                        continue  # 二波已走完
 
         # 峰值以来收盘价的反弹阳线次数（阶梯特征）
         pullback_slice = slice(peak_idx_in_range + 1, i + 1)
@@ -746,8 +805,11 @@ def prepare_hist_data(df: pd.DataFrame) -> pd.DataFrame:
         wave_peak_positions[i] = i - peak_idx_in_range
         wave_base_prices[i]    = base_price
         wave_gains[i]          = wave_gain
-        pullback_ratios[i]     = close_arr[i] / peak_price - 1   # 负值=已回调
-        room_to_peak[i]        = 1 - close_arr[i] / peak_price   # 正值=还有空间
+        # 真实回撤：峰值后最低价 / 峰值最高价 - 1（用高低价，反映最大回撤）
+        post_peak_lows = low_arr[peak_idx_in_range + 1:i + 1] if i > peak_idx_in_range else np.array([peak_price])
+        lowest_after_peak = np.min(post_peak_lows) if len(post_peak_lows) > 0 else peak_price
+        pullback_ratios[i]     = lowest_after_peak / peak_price - 1   # 负值=已回调
+        room_to_peak[i]        = 1 - close_arr[i] / peak_price        # 正值=还有空间
         stair_counts[i]        = stair_count
         wave_vol_avgs[i]       = wave_vol_avg
         pullback_vol_ratios[i] = pullback_vol_ratio

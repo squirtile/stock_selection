@@ -5,8 +5,8 @@ import tushare as ts
 import pandas as pd
 from datetime import datetime, timedelta
 
-TOKEN = "W5yA7cE9gI1kM3oQ5sU7wY9aC1eG3iK5mO7qS9uW1yA3cE5gI7kM9oQ1sU3wY5aC7eG9iK1mO3qS"
-PROXY_URL = "http://47.92.128.69:35721/dataapi"
+TOKEN = "mMug3jKblBu2rVLuRzFbPKyv68iUjNbAIbdBX93XZafNqjQyt9tnUkM1"
+PROXY_URL = "http://165.99.43.204:24629/"
 
 
 def test_tushare():
