@@ -677,13 +677,15 @@ def prepare_hist_data(df: pd.DataFrame) -> pd.DataFrame:
     stair_counts        = np.full(n, 0, dtype=int)      # 回调期反弹阳线次数
     wave_vol_avgs       = np.full(n, np.nan)            # 第一波期间均量
     pullback_vol_ratios = np.full(n, np.nan)            # 当前均量/第一波均量
+    pullback_dec_ratios = np.full(n, np.nan)            # 回调期量逐日递减占比
+    recovery_from_lows  = np.full(n, np.nan)            # 从低点反弹幅度
 
     for i in range(n):
         if i < 60 or pd.isna(close_arr[i]):
             continue
 
-        # ---- 第一步：在 [3, 30] 天前区间找第一波峰值（用最高价）----
-        peak_start = max(0, i - 30)
+        # ---- 第一步：在 [3, 35] 天前区间找第一波峰值（用最高价）----
+        peak_start = max(0, i - 35)
         peak_end   = max(0, i - 3)
         if peak_end <= peak_start + 3:
             continue
@@ -741,7 +743,7 @@ def prepare_hist_data(df: pd.DataFrame) -> pd.DataFrame:
             continue
 
         wave_gain = peak_price / base_price - 1
-        if wave_gain < 0.30:  # 第一波至少涨30%（参考6只模板：最低34%）
+        if wave_gain < 0.35:  # 第一波至少涨35%
             continue
 
         # ---- 第三步：验证第一波期间 MA5 > MA20 的天数占比 ----
@@ -762,9 +764,9 @@ def prepare_hist_data(df: pd.DataFrame) -> pd.DataFrame:
 
         # ---- 第四步：从峰值到当前的回调特征 ----
         pullback_len = i - peak_idx_in_range
-        if pullback_len < 3:   # 回调至少3天（模板最低3天）
+        if pullback_len < 3:   # 回调至少3天
             continue
-        if pullback_len > 20:  # 回调最长20天（模板最长15天，放宽到20天）
+        if pullback_len > 20:  # 回调最长20天
             continue
 
         # ---- 第五步：过滤已走完二波的票 ----
@@ -814,6 +816,18 @@ def prepare_hist_data(df: pd.DataFrame) -> pd.DataFrame:
         wave_vol_avgs[i]       = wave_vol_avg
         pullback_vol_ratios[i] = pullback_vol_ratio
 
+        # 从低点反弹幅度：当前价/回调最低点 - 1（>8% 说明已经弹起来了）
+        if lowest_after_peak > 0:
+            recovery_from_lows[i] = close_arr[i] / lowest_after_peak - 1
+
+        # 回调期量逐日递减占比：峰值后每天量 < 前一天量的天数 / 可比较天数
+        pb_vols = vol_arr[peak_idx_in_range + 1:i + 1]  # 峰值后到今天的量
+        if len(pb_vols) >= 2:
+            valid_mask = ~np.isnan(pb_vols[1:]) & ~np.isnan(pb_vols[:-1])
+            if valid_mask.sum() > 0:
+                dec_count = int(((pb_vols[1:] < pb_vols[:-1]) & valid_mask).sum())
+                pullback_dec_ratios[i] = dec_count / (len(pb_vols) - 1)
+
     df["第一波峰值"]      = wave_peak_prices
     df["第一波峰值距今天数"] = wave_peak_positions
     df["第一波起涨价"]    = wave_base_prices
@@ -824,9 +838,12 @@ def prepare_hist_data(df: pd.DataFrame) -> pd.DataFrame:
     # ---- 阶梯式回调：峰值以来至少出现过2次涨幅>2%的反弹阳线 ----
     df["阶梯式回调"]      = stair_counts >= 2
 
-    # ---- 回调缩量：近10日 vs 第一波期间均量 ----
-    df["回调缩量比"]      = pullback_vol_ratios  # <0.5 说明缩量明显
-    # 兼容旧字段名
+    # ---- 回调缩量递减占比：峰值后量逐日减少的天数比例 ----
+    df["回调缩量递减占比"] = pullback_dec_ratios  # >=0.6 说明量在持续萎缩
+    # 从低点反弹幅度：当前价/回调最低点 - 1
+    df["距低点反弹幅度"]   = recovery_from_lows    # >0.08 说明已经弹起来了
+    # 兼容旧字段（保留供其他策略使用）
+    df["回调缩量比"]      = pullback_vol_ratios
     df["缩量比5日"]       = pullback_vol_ratios
     df["缩量比10日"]      = pullback_vol_ratios
 

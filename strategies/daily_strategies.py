@@ -664,7 +664,7 @@ class SecondWaveStrategy(BaseDailyStrategy):
             "SMA5", "SMA10", "SMA20", "SMA60",
             "过去20日平均成交量",
             "第一波涨幅", "从高点回调幅度", "距前高空间",
-            "缩量比5日", "MA5趋势", "阶梯式回调",
+            "回调缩量递减占比", "MA5趋势", "阶梯式回调",
         ]
         for c in fields:
             if c not in row.index or pd.isna(row[c]):
@@ -676,13 +676,14 @@ class SecondWaveStrategy(BaseDailyStrategy):
         vol    = float(row["成交量"])
         vol5   = float(row["近5日平均成交量"])
         ma5    = float(row["SMA5"])
+        ma10   = float(row["SMA10"])
         ma20   = float(row["SMA20"])
         ma60   = float(row["SMA60"])
 
         wave   = float(row["第一波涨幅"])
         dd     = float(row["从高点回调幅度"])
         room   = float(row["距前高空间"])
-        shrink = float(row["缩量比5日"])
+        dec_r  = float(row["回调缩量递减占比"])
         ma5_d  = float(row["MA5趋势"])
         stair  = bool(row["阶梯式回调"])
 
@@ -693,13 +694,12 @@ class SecondWaveStrategy(BaseDailyStrategy):
         if wave < 0.25:
             return False, f"第一波涨幅不足({wave*100:.0f}%)"
 
-        # ② 回调 18%~35%（用户指定18-30%，放宽上限到35%容错）
-        #    dd = 当前价/第一波峰值 - 1，负数=在峰下面
-        max_dd = 0.35
-        if dd > -0.18:
-            return False, f"回调不足({dd*100:.0f}%，需≥18%)"
+        # ② 回调 15%~30%（dd = 最低价/峰值最高价 - 1，负数=在峰下面）
+        max_dd = 0.30
+        if dd > -0.15:
+            return False, f"回调不足({dd*100:.0f}%，需≥15%)"
         if dd < -max_dd:
-            return False, f"回调过深({dd*100:.0f}%，需≤35%)"
+            return False, f"回调过深({dd*100:.0f}%，需≤30%)"
 
         # ③ 趋势确认：必须处于上升趋势，收盘在 MA60 上方（排除下跌通道中的票）
         if ma20 < ma60:
@@ -707,20 +707,18 @@ class SecondWaveStrategy(BaseDailyStrategy):
         if close < ma60:
             return False, f"收盘低于MA60({(close/ma60-1)*100:.0f}%，非上升趋势)"
 
-        # ④ 缩量确认：回调期量 <= 第一波均量（回调缩量是洗盘特征）
-        if shrink > 1.20:
-            return False, f"回调期未缩量(量比{shrink*100:.0f}%)"
+        # ④ 阶梯缩量确认：回调期量逐日递减占比 >= 40%
+        if dec_r < 0.40:
+            return False, f"回调期末阶梯缩量(递减占比{dec_r*100:.0f}%)"
 
-        # ⑤ 阶梯式回调（非必须，但非阶梯时需更严格站上MA5和MA10）
+        # ⑤ 阶梯式回调（非必须，但非阶梯时允许收盘在MA5/MA10下方5%内）
         if not stair:
-            if close < ma5 or close < ma10:
+            if close < ma5 * 0.95 and close < ma10 * 0.95:
                 return False, "非阶梯回调且未站上MA5/MA10"
 
-        # ⑥ 企稳信号：站上MA5，MA5走平或向上
-        if close < ma5 * 0.97:
+        # ⑥ 企稳信号：收盘在MA5附近（回调中MA5必然下行，不检查趋势）
+        if close < ma5 * 0.95:
             return False, "未企稳(收盘低于MA5)"
-        if ma5_d < -0.03 * close:
-            return False, "MA5仍在下行"
 
         # ⑦ 距前高还有上涨空间（≥8%）
         if room < 0.08:
@@ -936,14 +934,14 @@ class SecondWaveAmbushStrategy(BaseDailyStrategy):
     # ------------------------------------------------------------------
     @staticmethod
     def _check_ambush_structure(row: pd.Series) -> tuple[bool, str]:
-        """回调到位 + 缩量企稳 + 确认尚未拉升"""
+        """回调到位 + 缩量企稳"""
         fields = [
             "收盘", "涨跌幅", "成交量", "开盘",
             "近5日平均成交量",
             "SMA5", "SMA10", "SMA20", "SMA60",
             "第一波涨幅", "从高点回调幅度", "距前高空间",
-            "缩量比5日", "MA5趋势", "阶梯式回调",
-            "昨日涨跌幅",
+            "回调缩量递减占比", "MA5趋势", "阶梯式回调",
+            "距低点反弹幅度",
         ]
         for c in fields:
             if c not in row.index or pd.isna(row[c]):
@@ -961,11 +959,10 @@ class SecondWaveAmbushStrategy(BaseDailyStrategy):
         wave    = float(row["第一波涨幅"])
         dd      = float(row["从高点回调幅度"])
         room    = float(row["距前高空间"])
-        shrink  = float(row["缩量比5日"])
+        dec_r   = float(row["回调缩量递减占比"])
+        recover = float(row["距低点反弹幅度"])
         ma5_d   = float(row["MA5趋势"])
         stair   = bool(row["阶梯式回调"])
-
-        yesterday_pct = float(row["昨日涨跌幅"])
 
         if close <= 0 or ma20 <= 0 or ma60 <= 0:
             return False, "价格或均线异常"
@@ -974,12 +971,12 @@ class SecondWaveAmbushStrategy(BaseDailyStrategy):
         if wave < 0.25:
             return False, f"第一波涨幅不足({wave*100:.0f}%)"
 
-        # ② 回调 18%~35%
-        max_dd = 0.35
-        if dd > -0.18:
-            return False, f"回调不足({dd*100:.0f}%，需≥18%)"
+        # ② 回调 15%~30%
+        max_dd = 0.30
+        if dd > -0.15:
+            return False, f"回调不足({dd*100:.0f}%，需≥15%)"
         if dd < -max_dd:
-            return False, f"回调过深({dd*100:.0f}%，需≤35%)"
+            return False, f"回调过深({dd*100:.0f}%，需≤30%)"
 
         # ③ 趋势确认：必须处于上升趋势，收盘在 MA60 上方（排除下跌通道中的票）
         if ma20 < ma60:
@@ -987,37 +984,21 @@ class SecondWaveAmbushStrategy(BaseDailyStrategy):
         if close < ma60:
             return False, f"收盘低于MA60({(close/ma60-1)*100:.0f}%，非上升趋势)"
 
-        # ④ 缩量确认
-        if shrink > 1.20:
-            return False, f"回调期未缩量(量比{shrink*100:.0f}%)"
+        # ④ 阶梯缩量确认：回调期量逐日递减占比 >= 40%
+        if dec_r < 0.40:
+            return False, f"回调期末阶梯缩量(递减占比{dec_r*100:.0f}%)"
 
-        # ⑤ 阶梯式回调或站上均线
-        if not stair:
-            if close < ma5 or close < ma10:
-                return False, "非阶梯回调且未站上MA5/MA10"
-
-        # ⑥ 企稳信号：收盘在MA5附近（±3%），MA5不再下行
-        if close < ma5 * 0.97:
-            return False, "未企稳(收盘低于MA5)"
-        if ma5_d < -0.03 * close:
-            return False, "MA5仍在下行"
-
-        # ⑦ 距前高还有上涨空间（≥12%，比启动策略更保守，留足安全垫）
+        # ⑤ 距前高还有上涨空间（≥12%，留足安全垫）
         if room < 0.12:
             return False, f"距前高太近({room*100:.0f}%)"
 
-        # ⑧ 反启动过滤：确认尚未拉升（与二波形态互补）
-        # ⑧a 今日涨幅 -2% ~ +2.5%（温和波动，非启动日）
-        if pct < -2.0:
-            return False, f"今日跌幅过大({pct*100:.1f}%)"
-        if pct >= 2.5:
-            return False, f"今日涨幅偏大({pct*100:.1f}%)，可能已在启动"
-        # ⑧b 昨日也未大涨（<5%，排除连续拉升中）
-        if yesterday_pct >= 5.0:
-            return False, f"昨日涨幅过大({yesterday_pct*100:.1f}%)"
-        # ⑧c 今日不放量（量 < 5日均量 × 1.3，确认不是偷偷启动）
-        if vol > vol5 * 1.3:
-            return False, f"今日放量(量比{vol/vol5:.1f})，可能已在启动"
+        # ⑥ 埋伏定位：今日涨幅 < 1%（几乎是平的，真正在蹲守）
+        if pct >= 1.0:
+            return False, f"今日已拉升({pct*100:.1f}%)"
+
+        # ⑦ 从低点反弹 < 8%（还没弹起来，真正在回调中）
+        if recover > 0.08:
+            return False, f"已从低点反弹({recover*100:.1f}%)"
 
         return True, "✓"
 

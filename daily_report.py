@@ -36,22 +36,29 @@ from config import EMAIL_CONFIG, FEISHU_DAILY_REPORT_URL
 OUTPUT_DIR = os.path.join(PROJECT_ROOT, "output")
 PKL_DIR = os.path.join(PROJECT_ROOT, "pkl")
 
+# 自动检测CPU核数，适配从2核云服到18核笔记本
+_CPU_COUNT = os.cpu_count() or 2
+_WORKERS_MAIN = max(1, min(_CPU_COUNT - 2, 12))      # main.py 留2核给系统
+_WORKERS_ML = max(1, min(_CPU_COUNT // 2, 6))         # ml_scan 用一半核
+
 
 # ============================================================
 # 1. 运行 main.py
 # ============================================================
 
-def run_main_py(force_update: bool = False) -> str:
+def run_main_py(force_update: bool = False, cache_only: bool = False) -> str:
     """运行 main.py，返回输出的 Excel 文件路径"""
     print("=" * 70)
     print("📊 第一步：运行 main.py 策略信号扫描")
     print("=" * 70)
 
-    cmd = [sys.executable, "main.py", "--workers", "6", "--no-email"]
-    if force_update:
+    cmd = [sys.executable, "main.py", "--workers", str(_WORKERS_MAIN), "--no-email"]
+    if cache_only:
+        cmd.append("--daily-cache-only")
+    elif force_update:
         cmd.append("--force-update-daily")
-    # 不加 --daily-cache-only，让 main.py 自动判断：
-    # 17:30 前 → 用缓存（快）；17:30 后 → 自动拉 BaoStock 当天数据
+    # --daily-cache-only：强制只用缓存（周末/调试用）
+    # 不加参数：17:30 前用缓存，17:30 后自动拉 BaoStock
 
     t0 = time.time()
     result = subprocess.run(cmd, cwd=PROJECT_ROOT)
@@ -78,7 +85,7 @@ def run_main_py(force_update: bool = False) -> str:
 # 2. 运行 ml_scan.py 对所有 pkl
 # ============================================================
 
-def run_ml_scan_all_pkls(ml_scan_workers: int = 4) -> dict[str, str]:
+def run_ml_scan_all_pkls(ml_scan_workers: int = _WORKERS_ML) -> dict[str, str]:
     """对 pkl/ 下所有 .pkl 运行 ml_scan.py，返回 {pkl名: 输出xlsx路径}"""
     print("\n" + "=" * 70)
     print("🤖 第二步：ML 模型扫描")
@@ -304,7 +311,7 @@ def _compute_stock_score(strategy_count: int, pct: float | None, ml_max: float |
     - 仅策略命中 → 中分
     - 仅 ML 命中 → 基础分
     """
-    score = 40  # 基础分
+    score = 80  # 基础分
 
     # 策略命中加分
     if strategy_count > 0:
@@ -338,6 +345,44 @@ def _collect_strategy_text(row, strategy_types: list[dict]) -> str:
         if pd.notna(val) and str(val).strip():
             parts.append(str(val).strip())
     return " + ".join(parts) if parts else "综合策略命中"
+
+
+def _build_kline_data(code: str, hist_dir: str, days: int = 30) -> list[dict]:
+    """读取缓存，用60天计算MA5/10/20/30，只返回最近 N 天"""
+    fpath = os.path.join(hist_dir, f'{code}_bs.csv')
+    if not os.path.exists(fpath):
+        return []
+
+    df = pd.read_csv(fpath)
+    df['日期'] = pd.to_datetime(df['日期'])
+    df = df.sort_values('日期').copy()
+
+    # 用最近60天计算MA（保证MA30有足够数据）
+    df_calc = df.tail(60).copy()
+    close = pd.to_numeric(df_calc['收盘'], errors='coerce')
+    df_calc['MA5'] = close.rolling(5, min_periods=5).mean().round(2)
+    df_calc['MA10'] = close.rolling(10, min_periods=10).mean().round(2)
+    df_calc['MA20'] = close.rolling(20, min_periods=20).mean().round(2)
+    df_calc['MA30'] = close.rolling(30, min_periods=30).mean().round(2)
+
+    # 只输出最近 N 天
+    df_out = df_calc.tail(days)
+
+    klines = []
+    for _, row in df_out.iterrows():
+        klines.append({
+            'date': row['日期'].strftime('%m-%d'),
+            'open': _safe_float(row.get('开盘')),
+            'high': _safe_float(row.get('最高')),
+            'low': _safe_float(row.get('最低')),
+            'close': _safe_float(row.get('收盘')),
+            'volume': int(row['成交量']) if pd.notna(row.get('成交量')) else 0,
+            'ma5': _safe_float(row.get('MA5')),
+            'ma10': _safe_float(row.get('MA10')),
+            'ma20': _safe_float(row.get('MA20')),
+            'ma30': _safe_float(row.get('MA30')),
+        })
+    return klines
 
 
 def build_mini_program_json(signal_file: str, ml_results: dict[str, str]) -> str:
@@ -590,6 +635,36 @@ def build_mini_program_json(signal_file: str, ml_results: dict[str, str]) -> str
             "count": ml_count,
             "children": ml_children,
         })
+
+    # ---------- 补充 K 线 + 均线数据 ----------
+    hist_dir = os.path.join(PROJECT_ROOT, "cache", "hist")
+    kline_count = 0
+    for s in final_stocks:
+        klines = _build_kline_data(s['code'], hist_dir)
+        s['klines'] = klines
+        if klines:
+            kline_count += 1
+            # 仅二波策略才提取波峰/低点信息
+            strategy_names = [t['name'] for t in s.get('strategyTypes', [])]
+            is_wave = '二波埋伏' in strategy_names or '二波形态' in strategy_names
+            if is_wave:
+                highs = [k['high'] for k in klines if k['high'] is not None]
+                lows  = [k['low'] for k in klines if k['low'] is not None]
+                if highs and lows:
+                    # 峰值：最高价
+                    peak_val = max(highs)
+                    peak_idx = highs.index(peak_val)
+                    # 峰值之后的最低点（这才是回调低点）
+                    low_after = lows[peak_idx:]
+                    if low_after:
+                        low_val = min(low_after)
+                        low_idx = peak_idx + low_after.index(low_val)
+                        s['wavePeakDate'] = klines[peak_idx]['date']
+                        s['wavePeakPrice'] = round(peak_val, 2)
+                        s['waveLowDate'] = klines[low_idx]['date']
+                        s['waveLowPrice'] = round(low_val, 2)
+                        s['wavePullback'] = round((low_val / peak_val - 1) * 100, 1)
+    print(f"  K线数据：{kline_count}/{len(final_stocks)} 只")
 
     # ---------- 写 JSON ----------
     result = {
@@ -844,13 +919,16 @@ def main():
     import argparse
     parser = argparse.ArgumentParser(description="每日综合选股报告")
     parser.add_argument("--force-update", action="store_true", help="强制更新 BaoStock 日线缓存")
+    parser.add_argument("--cache-only", action="store_true", help="强制只用本地缓存（周末/调试用，不请求BaoStock）")
     parser.add_argument("--no-email", action="store_true", help="跳过邮件和飞书发送")
     args = parser.parse_args()
 
+    start_time = datetime.now()
+    print(f"\n⏰ 开始时间：{start_time.strftime('%Y-%m-%d %H:%M:%S')}")
     total_start = time.time()
 
     # 1. 策略信号
-    signal_file = run_main_py(force_update=args.force_update)
+    signal_file = run_main_py(force_update=args.force_update, cache_only=args.cache_only)
 
     # 2. ML 扫描
     ml_results = run_ml_scan_all_pkls()
@@ -873,8 +951,10 @@ def main():
         send_feishu_message(signal_file, ml_results)
 
     total_elapsed = (time.time() - total_start) / 60
+    end_time = datetime.now()
     print(f"\n{'=' * 70}")
     print(f"🏁 全部完成，总耗时 {total_elapsed:.1f} 分钟")
+    print(f"⏰ 开始：{start_time.strftime('%Y-%m-%d %H:%M:%S')}  →  结束：{end_time.strftime('%Y-%m-%d %H:%M:%S')}")
     print(f"{'=' * 70}")
 
 

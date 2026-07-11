@@ -255,6 +255,99 @@ def get_stocks():
         }), 500
 
 
+@app.route("/api/ladder", methods=["GET"])
+def get_ladder():
+    """
+    获取连板天梯数据（近2天）。
+
+    数据来源：output/limit_up_ladder.json（由 limit_up_ladder.py --json 生成）
+
+    返回格式：
+    {
+        "success": true,
+        "generated_at": "...",
+        "dates": ["20260710", "20260709"],
+        "data": {
+            "20260710": { "total": 11, "max_nums": 3, "ladder": [...] },
+            "20260709": { "total": 6, "max_nums": 4, "ladder": [...] }
+        }
+    }
+    """
+    try:
+        ladder_path = OUTPUT_DIR / "limit_up_ladder.json"
+        if not ladder_path.exists():
+            return jsonify({
+                "success": False,
+                "error": "暂无连板数据，请先运行 limit_up_ladder.py --json",
+                "dates": [],
+                "data": {},
+            })
+
+        with open(ladder_path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+
+        return jsonify({
+            "success": True,
+            **data,
+        })
+    except Exception as e:
+        traceback.print_exc()
+        return jsonify({
+            "success": False,
+            "error": str(e),
+            "dates": [],
+            "data": {},
+        }), 500
+
+
+@app.route("/api/sector_heat", methods=["GET"])
+def get_sector_heat():
+    """
+    获取板块热度数据（近一周 + 汇总统计）。
+
+    数据来源：output/sector_heat.json（由 sector_heat.py --json 生成）
+    """
+    try:
+        path = OUTPUT_DIR / "sector_heat.json"
+        if not path.exists():
+            return jsonify({
+                "success": False,
+                "error": "暂无板块热度数据，请先运行 sector_heat.py --json",
+                "dates": [],
+                "data": {},
+                "summary": [],
+            })
+
+        with open(path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+
+        return jsonify({"success": True, **data})
+    except Exception as e:
+        traceback.print_exc()
+        return jsonify({
+            "success": False,
+            "error": str(e),
+            "dates": [],
+            "data": {},
+            "summary": [],
+        }), 500
+
+
+@app.route("/api/moneyflow", methods=["GET"])
+def get_moneyflow():
+    """获取资金流向数据（大盘+概念+行业）"""
+    try:
+        path = OUTPUT_DIR / "money_flow.json"
+        if not path.exists():
+            return jsonify({"success": False, "error": "暂无数据，请先运行 money_flow.py --json"})
+        with open(path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        return jsonify({"success": True, **data})
+    except Exception as e:
+        traceback.print_exc()
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
 @app.route("/api/stocks/refresh", methods=["POST"])
 def refresh_stocks():
     """

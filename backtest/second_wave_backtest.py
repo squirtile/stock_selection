@@ -26,7 +26,7 @@ warnings.filterwarnings("ignore")
 HIST_CACHE_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "cache", "hist")
 
 # 持有周期（交易日）
-HOLD_DAYS = [1, 2, 3, 5, 10, 15, 20, 30]
+HOLD_DAYS = [1, 2, 3, 5]
 
 # 策略实例
 STRATEGIES = {
