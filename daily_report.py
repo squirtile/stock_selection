@@ -690,55 +690,88 @@ def build_mini_program_json(signal_file: str, ml_results: dict[str, str]) -> str
 # 4. 发送邮件
 # ============================================================
 
+def _build_grouped_stocks_from_json(json_path: str) -> dict[str, list[dict]]:
+    """
+    从 mini_program_stocks.json 读取数据，按二级分组（策略名/ML模型名）整理，
+    每类只保留 TOP 10。
+
+    返回: { "突破": [...], "回调买入": [...], "W双底": [...] }
+    """
+    import json
+
+    groups: dict[str, list[dict]] = {}
+
+    with open(json_path, "r", encoding="utf-8") as f:
+        data = json.load(f)
+
+    stocks = data.get("stocks", [])
+
+    # 按二级分组归类（策略分组 groupKey + ML模型 key）
+    for s in stocks:
+        for st in s.get("strategyTypes", []):
+            gk = st.get("groupKey", "other")
+            groups.setdefault(gk, []).append(s)
+        for ml in s.get("mlModels", []):
+            gk = ml.get("displayName", ml.get("key", "ML"))
+            groups.setdefault(gk, []).append(s)
+
+    # 去重 + 排序 + TOP 10
+    result: dict[str, list[dict]] = {}
+    for gk, stock_list in groups.items():
+        seen = set()
+        unique = []
+        for s in sorted(stock_list, key=lambda x: x.get("score", 0), reverse=True):
+            code = s.get("code", "")
+            if code not in seen:
+                seen.add(code)
+                unique.append(s)
+                if len(unique) >= 10:
+                    break
+        result[gk] = unique
+
+    # 按策略注册顺序排列分组
+    ordered = {}
+    strategy_order = _get_strategy_group_order()
+    for gk in strategy_order:
+        if gk in result:
+            ordered[gk] = result.pop(gk)
+    # ML 模型按字母排
+    for gk in sorted(result.keys()):
+        ordered[gk] = result[gk]
+
+    return ordered
+
+
 def build_email_body(signal_file: str, ml_results: dict[str, str]) -> str:
-    """构建邮件正文 HTML"""
+    """构建邮件正文 HTML（按策略分组，每个策略只显示前10只）"""
+
     today = datetime.now().strftime('%Y-%m-%d')
     html = f"<h2>📊 每日综合选股报告 - {today}</h2>\n<hr>\n"
 
-    # 策略信号摘要
-    if signal_file and os.path.exists(signal_file):
-        try:
-            strategy_df = pd.read_excel(signal_file, sheet_name="全部信号")
-            if not strategy_df.empty:
-                cols = ["代码", "名称", "最新价", "涨跌幅", "信号类型", "命中策略数"]
-                cols = [c for c in cols if c in strategy_df.columns]
-                html += f"<h3>🔵 策略信号（{len(strategy_df)} 只）</h3>\n"
-                html += "<table border='1' cellpadding='4' cellspacing='0' style='border-collapse:collapse;font-size:12px;'>\n"
-                html += "<tr style='background:#4472C4;color:white;'>" + "".join(f"<th>{c}</th>" for c in cols) + "</tr>\n"
-                for _, row in strategy_df.head(10).iterrows():
-                    html += "<tr>" + "".join(f"<td>{row.get(c, '')}</td>" for c in cols) + "</tr>\n"
-                html += "</table><br>\n"
-        except Exception as e:
-            html += f"<p>策略信号读取失败：{e}</p>\n"
-    else:
-        html += "<p>今日无策略信号。</p>\n"
+    json_path = os.path.join(OUTPUT_DIR, MINI_PROGRAM_JSON)
+    if not os.path.exists(json_path):
+        html += "<p>暂无选股数据。</p>\n"
+        return html
 
-    # ML 扫描摘要（TOP 10 可观察候选）
-    html += "<h3>🤖 ML 模型扫描（可观察候选，TOP 10）</h3>\n"
-    if ml_results:
-        for pkl_name, filepath in ml_results.items():
-            try:
-                try:
-                    df = pd.read_excel(filepath, sheet_name="可观察候选_未涨停")
-                except ValueError:
-                    df = pd.read_excel(filepath, sheet_name="触发ML信号_全部")
-                if not df.empty:
-                    total = len(df)
-                    top10 = df.head(10)
-                    cols = ["代码", "名称", "ML分数", "涨跌幅", "收盘价"]
-                    cols = [c for c in cols if c in top10.columns]
-                    html += f"<p><b>{pkl_name}.pkl：共 {total} 只触发，展示可信度最高 10 只</b></p>\n"
-                    html += "<table border='1' cellpadding='4' cellspacing='0' style='border-collapse:collapse;font-size:12px;'>\n"
-                    html += "<tr style='background:#4472C4;color:white;'>" + "".join(f"<th>{c}</th>" for c in cols) + "</tr>\n"
-                    for _, row in top10.iterrows():
-                        html += "<tr>" + "".join(f"<td>{row.get(c, '')}</td>" for c in cols) + "</tr>\n"
-                    html += "</table><br>\n"
-                else:
-                    html += f"<p>{pkl_name}.pkl：无信号</p>\n"
-            except Exception as e:
-                html += f"<p>{pkl_name}.pkl：读取失败 ({e})</p>\n"
-    else:
-        html += "<p>无 ML 模型结果。</p>\n"
+    groups = _build_grouped_stocks_from_json(json_path)
+    if not groups:
+        html += "<p>今日无信号。</p>\n"
+        return html
+
+    for gk, stocks in groups.items():
+        html += f"<h3>📌 {gk}（{len(stocks)} 只）</h3>\n"
+        html += "<table border='1' cellpadding='4' cellspacing='0' style='border-collapse:collapse;font-size:12px;'>\n"
+        html += "<tr style='background:#4472C4;color:white;'><th>代码</th><th>名称</th><th>价格</th><th>涨跌幅</th><th>行业</th><th>评分</th></tr>\n"
+        for s in stocks:
+            code = s.get("code", "")
+            name = s.get("name", "")
+            price = s.get("price") or ""
+            pct = s.get("pct")
+            pct_str = f"{pct:+.2f}%" if pct is not None else ""
+            industry = s.get("industry", "")
+            score = s.get("score", "")
+            html += f"<tr><td>{code}</td><td>{name}</td><td>{price}</td><td>{pct_str}</td><td>{industry}</td><td>{score}</td></tr>\n"
+        html += "</table><br>\n"
 
     html += "<hr><p style='color:#888;font-size:11px;'>完整结果见附件 Excel。本邮件由系统自动发送。</p>"
     return html
@@ -785,87 +818,39 @@ def send_report_email(summary_file: str, signal_file: str, ml_results: dict[str,
 # ============================================================
 
 def build_feishu_msg(signal_file: str, ml_results: dict[str, str]) -> list:
-    """构建飞书消息内容（卡片消息，简洁版）"""
+    """构建飞书消息内容（按策略分组，每个策略只显示前10只）"""
+
     today = datetime.now().strftime('%Y-%m-%d')
     elements = []
 
-    # 策略信号
-    strategy_lines = []
-    if signal_file and os.path.exists(signal_file):
-        try:
-            strategy_df = pd.read_excel(signal_file, sheet_name="全部信号")
-            if not strategy_df.empty:
-                strategy_lines.append(f"**🔵 策略信号：{len(strategy_df)} 只（TOP 10）**")
-                # 优先展示：代码 名称 | 日期 | 涨幅 | 行业 | 命中策略
-                for _, row in strategy_df.head(10).iterrows():
-                    code = str(row.get("代码", "")).zfill(6)
-                    name = str(row.get("名称", ""))
-                    date = str(row.get("K线日期", row.get("日期", "")))[:10]
-                    pct = row.get("涨跌幅", "")
-                    pct_str = f"{float(pct):+.2f}%" if pd.notna(pct) else ""
-                    industry = str(row.get("行业", ""))
-                    strategy_hit = str(row.get("主升策略", row.get("突破反转策略", "")))
-                    line = f"  {code} {name}"
-                    extras = [x for x in [date, pct_str, industry, strategy_hit] if x and x != "nan"]
-                    if extras:
-                        line += f"  |  {' | '.join(extras)}"
-                    strategy_lines.append(line)
-            else:
-                strategy_lines.append("策略信号：无")
-        except Exception:
-            strategy_lines.append("策略信号：读取失败")
-    else:
-        strategy_lines.append("策略信号：无")
+    json_path = os.path.join(OUTPUT_DIR, MINI_PROGRAM_JSON)
+    if not os.path.exists(json_path):
+        elements.append("暂无选股数据。")
+        return elements
 
-    elements.append("\n".join(strategy_lines))
+    groups = _build_grouped_stocks_from_json(json_path)
+    if not groups:
+        elements.append("今日无信号。")
+        return elements
 
-    # ML 信号摘要（优先展示策略共振结果，否则展示 TOP 10 可观察候选）
-    if ml_results:
-        elements.append("")
-        elements.append("**🤖 ML 模型扫描（可观察候选，TOP 10）**")
-        for pkl_name, filepath in ml_results.items():
-            try:
-                # 优先读"ML策略共振"（ML + 规则策略双确认），其次"可观察候选_未涨停"
-                try:
-                    df_resonance = pd.read_excel(filepath, sheet_name="ML策略共振")
-                    # 只取未涨停的共振票
-                    if "信号分类" in df_resonance.columns:
-                        df_resonance = df_resonance[df_resonance["信号分类"] == "可观察候选_未涨停"]
-                    df = df_resonance
-                    has_resonance = True
-                except (ValueError, KeyError):
-                    has_resonance = False
-                    try:
-                        df = pd.read_excel(filepath, sheet_name="可观察候选_未涨停")
-                    except ValueError:
-                        df = pd.read_excel(filepath, sheet_name="触发ML信号_全部")
+    total_stocks = sum(len(v) for v in groups.values())
+    elements.append(f"**📊 选股信号：{total_stocks} 只（按策略分组，每类 TOP 10）**")
 
-                if not df.empty:
-                    total = len(df)
-                    label = "🔗 策略共振" if has_resonance else "ML信号"
-                    top10 = df.head(10)
-                    elements.append(f"  {pkl_name}.pkl（{label}）：共 {total} 只，TOP 10：")
-                    for _, row in top10.iterrows():
-                        code = str(row.get("代码", "")).zfill(6)
-                        name = str(row.get("名称", ""))
-                        score = row.get("ML分数", "")
-                        pct = row.get("涨跌幅", "")
-                        strategies = row.get("命中策略", "")
-                        score_str = f"{float(score):.4f}" if pd.notna(score) else ""
-                        pct_str = f"{float(pct):+.2f}%" if pd.notna(pct) else ""
-                        line = f"    {code} {name}"
-                        extras = [x for x in [f"ML:{score_str}", pct_str] if x]
-                        if strategies and str(strategies) != "nan":
-                            extras.append(str(strategies))
-                        if extras:
-                            line += f"  |  {' | '.join(extras)}"
-                        elements.append(line)
-                else:
-                    elements.append(f"  {pkl_name}.pkl：无信号")
-            except Exception:
-                elements.append(f"  {pkl_name}.pkl：读取失败")
-    else:
-        elements.append("ML 模型：无")
+    for gk, stocks in groups.items():
+        lines = [f"\n**📌 {gk}（{len(stocks)} 只）**"]
+        for s in stocks:
+            code = s.get("code", "").zfill(6)
+            name = s.get("name", "")
+            pct = s.get("pct")
+            pct_str = f"{pct:+.2f}%" if pct is not None else ""
+            industry = s.get("industry", "")
+            score = s.get("score", "")
+            line = f"  {code} {name}"
+            extras = [x for x in [pct_str, industry, f"评分{score}"] if x]
+            if extras:
+                line += f"  |  {' | '.join(extras)}"
+            lines.append(line)
+        elements.append("\n".join(lines))
 
     elements.append("")
     elements.append(f"📎 详细数据见邮件附件 | {datetime.now().strftime('%H:%M')}")
