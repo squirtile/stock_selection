@@ -24,7 +24,7 @@ import pandas as pd
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from data_loader import disable_proxy, get_tushare_pro
+from data_loader import disable_proxy, get_tushare_pro, get_latest_trade_date
 
 OUTPUT_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "output")
 LADDER_JSON = "limit_up_ladder.json"
@@ -146,36 +146,6 @@ def export_json(data_by_date: dict):
     return filepath
 
 
-def get_trade_date(pro, target_date: str = None, prev: bool = False) -> str:
-    """获取有效交易日。prev=True 时获取 target_date 的前一个交易日。"""
-    if target_date and not prev:
-        return target_date
-
-    if target_date and prev:
-        # 从 target_date 往前找
-        base = datetime.strptime(target_date, "%Y%m%d")
-    else:
-        base = datetime.now()
-
-    start_offset = 1 if prev else 0
-
-    for i in range(start_offset, start_offset + 14):
-        test_date = (base - timedelta(days=i)).strftime("%Y%m%d")
-        test_dt = datetime.strptime(test_date, "%Y%m%d")
-        if test_dt.weekday() >= 5:
-            continue
-        try:
-            df_cal = pro.trade_cal(exchange="SSE", start_date=test_date, end_date=test_date)
-            if df_cal is not None and not df_cal.empty:
-                if df_cal.iloc[0].get("is_open", 0) == 1:
-                    return test_date  # ← 确认交易日才返回
-        except Exception:
-            pass
-        # 不是交易日，继续回溯
-
-    return (datetime.now() - timedelta(days=1)).strftime("%Y%m%d")
-
-
 def main():
     parser = argparse.ArgumentParser(
         description="连板天梯 — 基于 Tushare limit_step",
@@ -207,12 +177,12 @@ def main():
         target_dates = [args.date]
     elif args.json:
         # JSON 模式：拉最近2个交易日
-        t1 = get_trade_date(pro)           # 今天/最近
-        t2 = get_trade_date(pro, t1, prev=True)  # 前一天
+        t1 = get_latest_trade_date(pro)           # 今天/最近
+        t2 = get_latest_trade_date(pro, t1, prev=True)  # 前一天
         target_dates = [d for d in [t1, t2] if d]
         print(f"📅 目标日期: {target_dates}")
     else:
-        target_dates = [get_trade_date(pro)]
+        target_dates = [get_latest_trade_date(pro)]
         print(f"📅 交易日: {target_dates[0]}")
 
     # 拉数据

@@ -25,7 +25,7 @@ import pandas as pd
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from data_loader import disable_proxy, get_tushare_pro
+from data_loader import disable_proxy, get_tushare_pro, get_latest_trade_date
 
 OUTPUT_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "output")
 SECTOR_JSON = "sector_heat.json"
@@ -147,12 +147,13 @@ def export_json(data_by_date: dict, summary: list):
 
 
 def get_trade_dates(pro, target_date: str = None, count: int = WEEK_DAYS) -> list:
-    """获取最近 N 个交易日，从早到晚"""
+    """获取最近 N 个交易日，从早到晚。当天（工作日）不依赖 trade_cal 确认。"""
     if target_date:
         base = datetime.strptime(target_date, "%Y%m%d")
         return [(base - timedelta(days=i)).strftime("%Y%m%d") for i in range(count - 1, -1, -1)]
 
     today = datetime.now()
+    today_str = today.strftime("%Y%m%d")
     dates = []
     i = 0
     while len(dates) < count and i < 21:
@@ -160,6 +161,10 @@ def get_trade_dates(pro, target_date: str = None, count: int = WEEK_DAYS) -> lis
         test_dt = datetime.strptime(test_date, "%Y%m%d")
         i += 1
         if test_dt.weekday() >= 5:
+            continue
+        # 今天（工作日）直接接受，不依赖 trade_cal
+        if test_date == today_str:
+            dates.insert(0, test_date)
             continue
         try:
             df_cal = pro.trade_cal(exchange="SSE", start_date=test_date, end_date=test_date)

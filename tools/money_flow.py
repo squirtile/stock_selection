@@ -24,7 +24,7 @@ import pandas as pd
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from data_loader import disable_proxy, get_tushare_pro
+from data_loader import disable_proxy, get_tushare_pro, get_latest_trade_date
 
 OUTPUT_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "output")
 MONEYFLOW_JSON = "money_flow.json"
@@ -117,26 +117,6 @@ def export_json(mkt: dict, cnt: list, ind: list, trade_date: str):
     print(f"\n📁 JSON 已导出: {filepath}（大盘+{len(cnt)}概念+{len(ind)}行业）")
 
 
-def get_trade_date(pro, target_date: str = None) -> str:
-    """获取最近有效交易日（自动回溯）"""
-    if target_date:
-        return target_date
-    today = datetime.now()
-    for i in range(10):
-        test_date = (today - timedelta(days=i)).strftime("%Y%m%d")
-        test_dt = datetime.strptime(test_date, "%Y%m%d")
-        if test_dt.weekday() >= 5:  # 跳过周六日
-            continue
-        try:
-            df_cal = pro.trade_cal(exchange="SSE", start_date=test_date, end_date=test_date)
-            if df_cal is not None and not df_cal.empty and df_cal.iloc[0].get("is_open", 0) == 1:
-                return test_date  # ← 确认交易日才返回
-        except Exception:
-            pass
-        # 不是交易日，继续回溯
-    return (today - timedelta(days=1)).strftime("%Y%m%d")
-
-
 def main():
     parser = argparse.ArgumentParser(description="资金流向 — 大盘/概念/行业")
     parser.add_argument("--date", type=str, default=None, help="交易日 YYYYMMDD")
@@ -147,7 +127,7 @@ def main():
     disable_proxy()
     pro = get_tushare_pro()
 
-    td = get_trade_date(pro, args.date)
+    td = get_latest_trade_date(pro, args.date)
     print(f"📅 交易日: {td}")
 
     # 拉数据

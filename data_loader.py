@@ -247,3 +247,48 @@ def load_a_stock_spot() -> pd.DataFrame:
     print(f"Tushare 原始数据缓存已保存：{cache_file}")
 
     return result
+
+
+def get_latest_trade_date(pro, target_date: str = None, prev: bool = False) -> str:
+    """
+    获取有效交易日。
+
+    与各工具脚本中分散的 get_trade_date() 不同，这个版本：
+    - 对于「今天」（周一至周五）：直接返回今天，不依赖 trade_cal 确认
+      （因为 Tushare trade_cal 可能当天还未标记为交易日，但数据可能已就绪）
+    - 对于历史日期：仍然通过 trade_cal 确认
+    - prev=True：返回 target_date 的前一个交易日
+
+    返回格式：YYYYMMDD
+    """
+    if target_date and not prev:
+        return target_date
+
+    if target_date and prev:
+        base = datetime.strptime(target_date, "%Y%m%d")
+    else:
+        base = datetime.now()
+
+    today_str = datetime.now().strftime("%Y%m%d")
+
+    # 如果是「今天」且是工作日 → 直接返回，不查 trade_cal
+    if not prev and target_date is None:
+        if base.weekday() < 5:
+            return today_str
+
+    # 向前回溯找交易日
+    start_offset = 1 if prev else 0
+    for i in range(start_offset, start_offset + 14):
+        test_date = (base - timedelta(days=i)).strftime("%Y%m%d")
+        test_dt = datetime.strptime(test_date, "%Y%m%d")
+        if test_dt.weekday() >= 5:
+            continue
+        try:
+            df_cal = pro.trade_cal(exchange="SSE", start_date=test_date, end_date=test_date)
+            if df_cal is not None and not df_cal.empty:
+                if df_cal.iloc[0].get("is_open", 0) == 1:
+                    return test_date
+        except Exception:
+            pass
+
+    return (datetime.now() - timedelta(days=1)).strftime("%Y%m%d")
