@@ -8,8 +8,10 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import numpy as np
 import pandas as pd
-import baostock as bs
+import tushare as ts
 
+from config import DATA_SOURCE
+from data_loader import get_tushare_pro, call_with_retry
 from strategies import evaluate_daily_strategies
 
 
@@ -22,17 +24,22 @@ MIN_AVG_AMOUNT_20D = 50_000_000      # 过去20天日均成交额 >= 5000万
 LIMIT_UP_PCT = 9.95                  # 主板涨停判断：涨幅 >= 9.95%
 LIMIT_UP_WINDOW = 15                 # 过去15个交易日
 
-# BaoStock 日线数据一般在盘后较晚才稳定更新。
-# 盘前/盘中扫描时，如果本地缓存最新日期是上一交易日，属于正常情况。
+# Tushare 日线数据通常在 17:00 后覆盖当日
 DAILY_AUTO_UPDATE_AFTER_TIME = "17:30"
+
+# ── 调试：请求速率追踪（全局）──
+_RATE_LOG: list[float] = []      # 时间戳列表，用于计算近60s速率
+_REQ_TOTAL = 0                    # 累计总请求次数（含重试）
+_REQ_SUCCESS = 0                  # 成功次数
+_REQ_RETRY = 0                    # 重试次数
 
 
 def is_after_daily_auto_update_time(now=None, after_time: str = DAILY_AUTO_UPDATE_AFTER_TIME) -> bool:
     """
-    是否已经到达允许自动更新 BaoStock 日线缓存的时间。
+    是否已经到达允许自动更新 Tushare 日线缓存的时间。
 
-    默认 17:30 之后才允许自动请求 BaoStock 补当天日K；
-    17:30 之前优先使用本地 cache/hist，避免盘前扫描被逐只请求拖慢。
+    默认 17:30 之后才允许自动请求 Tushare 补当天日K；
+    17:30 之前优先使用本地 cache/hist。
     """
 
     now = now or datetime.now()
@@ -53,9 +60,9 @@ def should_update_daily_cache(
 ) -> bool:
     """
     日线缓存更新决策：
-    1. cache_only=True：永远不请求 BaoStock；
-    2. force_update=True：强制请求 BaoStock；
-    3. 默认：17:30 之后才允许自动请求 BaoStock。
+    1. cache_only=True：永远不请求 Tushare；
+    2. force_update=True：强制请求 Tushare；
+    3. 默认：17:30 之后才允许自动请求 Tushare。
     """
 
     if cache_only:
@@ -77,23 +84,23 @@ def check_secondary_filters(row) -> bool:
     return row["过去20日日均成交额"] >= MIN_AVG_AMOUNT_20D
 
 
-def get_bs_code(code: str) -> str:
+def get_ts_code(code: str) -> str:
     """
-    转换成 BaoStock 代码格式。
+    6位代码 → Tushare ts_code 格式。
 
-    上海：sh.600xxx / sh.601xxx / sh.603xxx / sh.605xxx
-    深圳：sz.000xxx / sz.001xxx / sz.002xxx / sz.003xxx
+    上海：600xxx.SH / 601xxx.SH / 603xxx.SH / 605xxx.SH
+    深圳：000xxx.SZ / 001xxx.SZ / 002xxx.SZ / 003xxx.SZ / 300xxx.SZ
     """
 
     code = str(code).zfill(6)
 
     if code.startswith(("600", "601", "603", "605")):
-        return f"sh.{code}"
+        return f"{code}.SH"
 
-    return f"sz.{code}"
+    return f"{code}.SZ"
 
 
-def get_hist_data_baostock(
+def get_hist_data_tushare(
     code: str,
     use_cache: bool = True,
     cache_only: bool = False,
@@ -101,14 +108,15 @@ def get_hist_data_baostock(
     auto_update_after_time: str = DAILY_AUTO_UPDATE_AFTER_TIME,
 ) -> pd.DataFrame:
     """
-    使用 BaoStock 获取个股日 K 线数据。
+    使用 Tushare pro.daily() 获取个股日 K 线数据（不复权）。
 
     增量缓存逻辑：
-    1. 如果没有缓存，首次获取最近150个自然日数据
+    1. 如果没有缓存，首次获取最近365天数据
     2. 如果已有缓存，只从缓存最后日期之后开始更新
     3. 合并新旧数据，按日期去重
-    4. 打印当前使用的最新K线日期
     """
+
+    global _REQ_TOTAL, _REQ_SUCCESS, _REQ_RETRY
 
     os.makedirs(HIST_CACHE_DIR, exist_ok=True)
 
@@ -116,7 +124,7 @@ def get_hist_data_baostock(
     cache_file = os.path.join(HIST_CACHE_DIR, f"{code}_bs.csv")
 
     end_date = datetime.now().strftime("%Y-%m-%d")
-    bs_code = get_bs_code(code)
+    ts_code = get_ts_code(code)
     allow_update = should_update_daily_cache(
         cache_only=cache_only,
         force_update=force_update,
@@ -140,25 +148,32 @@ def get_hist_data_baostock(
                 # 缓存已到今天，直接使用。
                 if last_date.strftime("%Y-%m-%d") >= end_date:
                     if VERBOSE_KLINE_LOG:
-                        print(f"{code} 使用本地BaoStock缓存，最新K线日期：{last_date.strftime('%Y-%m-%d')}")
+                        print(f"{code} 使用本地缓存，最新K线日期：{last_date.strftime('%Y-%m-%d')}")
                     old_df["日期"] = old_df["日期"].dt.strftime("%Y-%m-%d")
                     return old_df
 
-                # 17:30 前，或者 cache_only 模式，允许昨天缓存直接参与盘前扫描。
+                # 缓存是昨天的，且今天还未收盘（15:00前）→ 没必要联网白跑
+                now = datetime.now()
+                market_close = now.replace(hour=15, minute=0, second=0, microsecond=0)
+                if last_date.strftime("%Y-%m-%d") == (now - timedelta(days=1)).strftime("%Y-%m-%d") and now < market_close:
+                    old_df["日期"] = old_df["日期"].dt.strftime("%Y-%m-%d")
+                    return old_df
+
+                # 17:30 前，或者 cache_only 模式，直接使用缓存。
                 if not allow_update:
                     if VERBOSE_KLINE_LOG:
                         print(
-                            f"{code} 使用本地BaoStock缓存分析，"
+                            f"{code} 使用本地缓存分析，"
                             f"最新K线日期：{last_date.strftime('%Y-%m-%d')}；"
-                            f"未到 {auto_update_after_time} 或已指定只用缓存，不请求 BaoStock。"
+                            f"未到 {auto_update_after_time} 或已指定只用缓存，不请求 Tushare。"
                         )
                     old_df["日期"] = old_df["日期"].dt.strftime("%Y-%m-%d")
                     return old_df
 
-                # 17:30 后，或者强制更新时，才从最后日期的下一天开始补数据。
+                # 17:30 后/强制更新：从最后日期的下一天开始补数据。
                 start_date = (last_date + timedelta(days=1)).strftime("%Y-%m-%d")
                 if VERBOSE_KLINE_LOG:
-                    print(f"{code} 本地BaoStock缓存最新K线日期：{last_date.strftime('%Y-%m-%d')}，开始增量更新...")
+                    print(f"{code} 本地缓存最新K线日期：{last_date.strftime('%Y-%m-%d')}，开始增量更新...")
             else:
                 start_date = (datetime.now() - timedelta(days=365)).strftime("%Y-%m-%d")
                 if not allow_update:
@@ -175,86 +190,85 @@ def get_hist_data_baostock(
         start_date = (datetime.now() - timedelta(days=365)).strftime("%Y-%m-%d")
         if not allow_update:
             if VERBOSE_KLINE_LOG:
-                print(f"{code} 无本地BaoStock缓存，且未到 {auto_update_after_time}，跳过 BaoStock 请求。")
+                print(f"{code} 无本地缓存，且未到 {auto_update_after_time}，跳过 Tushare 请求。")
             return pd.DataFrame()
         if VERBOSE_KLINE_LOG:
-            print(f"{code} 无本地BaoStock缓存，首次获取最近365天K线...")
+            print(f"{code} 无本地缓存，首次获取最近365天K线...")
+
+    # 转换日期格式为 YYYYMMDD（Tushare 要求）
+    start_ts = start_date.replace("-", "")
+    end_ts = end_date.replace("-", "")
+
+    # ── 调试：追踪请求速率 ──
+    _now = time.time()
+    _RATE_LOG.append(_now)
+    while _RATE_LOG and _RATE_LOG[0] < _now - 60:
+        _RATE_LOG.pop(0)
+    _rate = len(_RATE_LOG)
+    _REQ_TOTAL += 1
 
     MAX_RETRIES = 3
     last_error = None
     for retry in range(MAX_RETRIES):
         try:
-            rs = bs.query_history_k_data_plus(
-                bs_code,
-                fields="date,open,high,low,close,volume,amount,pctChg",
-                start_date=start_date,
-                end_date=end_date,
-                frequency="d",
-                adjustflag="2"
+            pro = get_tushare_pro()
+            df = ts.pro_bar(
+                ts_code=ts_code,
+                adj='qfq',
+                start_date=start_ts,
+                end_date=end_ts,
+                api=pro,
             )
 
-            if rs.error_code != "0":
-                err_msg = rs.error_msg or ""
-                # 网络类错误 → 抛异常触发重试；业务错误 → 直接回退缓存
-                NETWORK_ERROR_KEYWORDS = ["网络接收", "网络", "超时", "连接", "timeout", "reset", "broken", "pipe"]
-                if any(kw in str(err_msg).lower() for kw in NETWORK_ERROR_KEYWORDS):
-                    raise ConnectionError(f"{code} BaoStock网络错误：{err_msg}")
+            if df is not None and not df.empty:
+                # 重命名列，兼容现有缓存格式
+                df = df.rename(columns={
+                    "trade_date": "日期",
+                    "open": "开盘",
+                    "high": "最高",
+                    "low": "最低",
+                    "close": "收盘",
+                    "vol": "成交量",
+                    "amount": "成交额",
+                    "pct_chg": "涨跌幅",
+                })
+                df["代码"] = code
 
-                print(f"{code} BaoStock查询失败：{err_msg}")
-                if not old_df.empty:
-                    last_date = old_df["日期"].max()
-                    if VERBOSE_KLINE_LOG:
-                        print(f"{code} 使用旧缓存，最新K线日期：{last_date.strftime('%Y-%m-%d')}")
-                    old_df["日期"] = old_df["日期"].dt.strftime("%Y-%m-%d")
-                    return old_df
-                return pd.DataFrame()
+                # 保留需要的列
+                keep_cols = ["日期", "开盘", "最高", "最低", "收盘", "成交量", "成交额", "涨跌幅", "代码"]
+                df = df[[c for c in keep_cols if c in df.columns]]
 
-            data_list = []
-            while rs.next():
-                data_list.append(rs.get_row_data())
+                # 类型转换
+                for col in ["开盘", "最高", "最低", "收盘", "成交量", "成交额", "涨跌幅"]:
+                    if col in df.columns:
+                        df[col] = pd.to_numeric(df[col], errors="coerce")
 
-            if data_list:
-                new_df = pd.DataFrame(data_list, columns=rs.fields)
-                new_df = new_df.rename(
-                    columns={
-                        "date": "日期",
-                        "open": "开盘",
-                        "high": "最高",
-                        "low": "最低",
-                        "close": "收盘",
-                        "volume": "成交量",
-                        "amount": "成交额",
-                        "pctChg": "涨跌幅",
-                    }
-                )
-                new_df["代码"] = code
+                # Tushare vol 单位是"手"（100股），统一转为"股"，与 BaoStock 一致
+                if "成交量" in df.columns:
+                    df["成交量"] = df["成交量"] * 100
 
-                numeric_cols = [
-                    "开盘", "最高", "最低", "收盘",
-                    "成交量", "成交额", "涨跌幅",
-                ]
-                for col in numeric_cols:
-                    new_df[col] = pd.to_numeric(new_df[col], errors="coerce")
-
-                new_df["日期"] = pd.to_datetime(new_df["日期"])
-
-                if not old_df.empty:
-                    df = pd.concat([old_df, new_df], ignore_index=True)
-                else:
-                    df = new_df
-
-                df = df.drop_duplicates(subset=["日期"], keep="last")
+                df["日期"] = pd.to_datetime(df["日期"].astype(str), format="%Y%m%d", errors="coerce")
+                df = df.dropna(subset=["日期"])
                 df = df.sort_values("日期")
 
+                # 合并新旧数据
+                if not old_df.empty:
+                    df = pd.concat([old_df, df], ignore_index=True)
+                    df = df.drop_duplicates(subset=["日期"], keep="last")
+                    df = df.sort_values("日期")
+
+                # 只保留最近365天
                 cutoff_date = datetime.now() - timedelta(days=365)
                 df = df[df["日期"] >= cutoff_date]
 
                 latest_date = df["日期"].max().strftime("%Y-%m-%d")
                 if VERBOSE_KLINE_LOG:
-                    print(f"{code} BaoStock K线已更新到：{latest_date}")
+                    print(f"{code} Tushare K线已更新到：{latest_date}")
 
                 df["日期"] = df["日期"].dt.strftime("%Y-%m-%d")
                 df.to_csv(cache_file, index=False, encoding="utf-8-sig")
+                _REQ_SUCCESS += 1
+                # time.sleep(0.2)  # 只在实际拉取数据后才限速
                 return df
 
             else:
@@ -262,36 +276,25 @@ def get_hist_data_baostock(
                 if not old_df.empty:
                     last_date = old_df["日期"].max()
                     if VERBOSE_KLINE_LOG:
-                        print(f"{code} BaoStock暂无新数据，使用缓存，最新K线日期：{last_date.strftime('%Y-%m-%d')}")
+                        print(f"{code} Tushare暂无新数据，使用缓存，最新K线日期：{last_date.strftime('%Y-%m-%d')}")
                     old_df["日期"] = old_df["日期"].dt.strftime("%Y-%m-%d")
                     return old_df
-                print(f"{code} BaoStock没有返回K线数据。")
+                print(f"{code} Tushare没有返回K线数据。")
                 return pd.DataFrame()
 
         except Exception as e:
             last_error = e
             if retry < MAX_RETRIES - 1:
+                _REQ_RETRY += 1
                 time.sleep(2 * (retry + 1))
-            # 3次都失败，抛出让外层处理（重登+重试）
 
-    # 重试耗尽，抛出最后一个异常给外层
+    # 重试耗尽，使用旧缓存
+    if not old_df.empty:
+        last_date = old_df["日期"].max()
+        print(f"{code} Tushare请求3次均失败，使用旧缓存（{last_date.strftime('%Y-%m-%d')}）")
+        old_df["日期"] = old_df["日期"].dt.strftime("%Y-%m-%d")
+        return old_df
     raise last_error
-
-
-# 兼容旧函数名：如果其他地方还调用 get_hist_data_tushare，也转到 BaoStock。
-def get_hist_data_tushare(
-    code: str,
-    use_cache: bool = True,
-    pro=None,
-    cache_only: bool = False,
-    force_update: bool = False,
-) -> pd.DataFrame:
-    return get_hist_data_baostock(
-        code,
-        use_cache=use_cache,
-        cache_only=cache_only,
-        force_update=force_update,
-    )
 
 
 def prepare_hist_data(df: pd.DataFrame) -> pd.DataFrame:
@@ -1088,7 +1091,7 @@ def check_main_rising_signal(
     """
 
     try:
-        hist_df = get_hist_data_baostock(
+        hist_df = get_hist_data(
             code,
             use_cache=True,
             cache_only=cache_only,
@@ -1117,14 +1120,19 @@ def scan_main_rising_stocks(
     cache_only: bool = False,
     force_update: bool = False,
     workers: int = 1,
+    update_workers: int = 1,
 ) -> pd.DataFrame:
     """
     对基础股票池进行主升信号扫描。
 
-    两阶段策略（解决 BaoStock 不支持多线程的问题）：
-    阶段1：单线程更新所有缓存（如需联网）
+    两阶段策略：
+    阶段1：多线程更新缓存（update_workers，默认 1，推荐 3）
     阶段2：多线程从缓存扫描（workers 默认 1，纯缓存推荐 8）
+
+    Tushare 免费版限速 ~200次/分钟，阶段1 建议 update_workers ≤ 3。
     """
+
+    from threading import Lock
 
     result_list = []
     total = len(stock_pool_df)
@@ -1132,15 +1140,23 @@ def scan_main_rising_stocks(
         cache_only=cache_only,
         force_update=force_update,
     )
-    login_failed = False
 
-    # ---------- 登录 ----------
     if allow_update:
         if force_update:
-            print("日线扫描模式：强制更新 BaoStock 日K缓存。")
+            print(f"日线扫描模式：强制更新日K缓存（数据源: {DATA_SOURCE}）。")
         else:
-            print(f"日线扫描模式：已到 {DAILY_AUTO_UPDATE_AFTER_TIME} 后，允许 BaoStock 增量更新。")
+            print(f"日线扫描模式：已到 {DAILY_AUTO_UPDATE_AFTER_TIME} 后，允许增量更新（数据源: {DATA_SOURCE}）。")
+    else:
+        if cache_only:
+            print(f"日线扫描模式：只使用本地 cache/hist（{workers}线程），不请求网络。")
+        else:
+            print(f"日线扫描模式：未到 {DAILY_AUTO_UPDATE_AFTER_TIME}，使用本地 cache/hist（{workers}线程）。")
 
+    scan_start_time = time.time()
+
+    # ── BaoStock 统一会话：阶段1前登入 ──
+    if allow_update and DATA_SOURCE == "baostock":
+        import baostock as bs
         print("正在登录 BaoStock...")
         lg = None
         for attempt in range(3):
@@ -1148,177 +1164,183 @@ def scan_main_rising_stocks(
                 lg = bs.login()
                 if getattr(lg, "error_code", None) == "0":
                     break
-                print(f"BaoStock 第 {attempt + 1} 次登录失败：{getattr(lg, 'error_msg', '未知错误')}")
+                print(f"  BaoStock 第 {attempt+1} 次登录失败: {getattr(lg, 'error_msg', '未知')}")
             except Exception as exc:
-                print(f"BaoStock 第 {attempt + 1} 次登录异常：{exc}")
+                print(f"  BaoStock 第 {attempt+1} 次登录异常: {exc}")
             if attempt < 2:
                 time.sleep(2)
-
         if getattr(lg, "error_code", None) != "0":
-            login_failed = True
-            print("BaoStock 登录失败，切换为仅使用本地缓存继续扫描。")
-    else:
-        lg = None
-        if cache_only:
-            print(f"日线扫描模式：只使用本地 cache/hist（{workers}线程），不请求 BaoStock。")
-        else:
-            print(f"日线扫描模式：未到 {DAILY_AUTO_UPDATE_AFTER_TIME}，使用本地 cache/hist（{workers}线程）。")
+            print("BaoStock 登录失败，切换为仅使用本地缓存。")
+            allow_update = False
 
-    do_update = force_update and not login_failed
-    scan_start_time = time.time()
+    # ================================================================
+    # 阶段1：多线程更新缓存
+    # ================================================================
+    if allow_update:
+        if DATA_SOURCE == "baostock" and update_workers > 1:
+            print(f"  ⚠️ BaoStock 不支持多线程，强制单线程")
+            update_workers = 1
+        uw = max(1, min(update_workers, 5))
+        print(f"\n阶段1：{uw}线程更新日K缓存（共 {total} 只）...")
+        phase1_start = time.time()
+        failed_stocks: list[tuple[str, str]] = []
+        counter = [0]
+        lock = Lock()
 
-    try:
-        # ================================================================
-        # 阶段1：单线程更新缓存（BaoStock 不支持并发）
-        # ================================================================
-        if allow_update and not login_failed:
-            print(f"\n阶段1：单线程更新日K缓存（共 {total} 只）...")
-            phase1_start = time.time()
-            failed_stocks = []  # 记录重登后仍然失败的股票，最后统一再抢救一次
-            for i, (_, row) in enumerate(stock_pool_df.iterrows(), start=1):
-                code = str(row["代码"]).zfill(6)
-                name = row["名称"]
-                try:
-                    get_hist_data_baostock(code, cache_only=False, force_update=do_update)
-                except Exception as e:
-                    # 内部3次重试都失败 → 重登 → 再试一次
-                    print(f"\n  {code} {name} 失败({e})，重登后重试...")
-                    try:
-                        bs.logout()
-                    except Exception:
-                        pass
-                    time.sleep(2)
-                    try:
-                        lg = bs.login()
-                        if getattr(lg, "error_code", None) == "0":
-                            try:
-                                get_hist_data_baostock(code, cache_only=False, force_update=do_update)
-                            except Exception:
-                                failed_stocks.append((code, name))  # 重登后仍失败，记录待抢救
-                        else:
-                            print(f"  重登失败: {getattr(lg, 'error_msg', '未知')}，切换为仅缓存模式。")
-                            break
-                    except Exception as login_err:
-                        print(f"  重登异常: {login_err}，切换为仅缓存模式。")
-                        break
+        stocks_list = list(stock_pool_df.iterrows())
 
+        def update_one(idx_and_row):
+            idx, row = idx_and_row
+            code = str(row["代码"]).zfill(6)
+            name = row["名称"]
+            try:
+                get_hist_data(code, cache_only=False, force_update=force_update)
+            except Exception as e:
+                with lock:
+                    failed_stocks.append((code, name))
+                    if len(failed_stocks) <= 10:
+                        print(f"\n  {code} {name} 失败: {str(e)[:80]}")
+
+            with lock:
+                counter[0] += 1
+                i = counter[0]
                 elapsed = time.time() - phase1_start
-                remaining = (total - i) * elapsed / i if i > 0 else 0
+                remaining_s = (total - i) * elapsed / i if i > 0 else 0
+                rate_now = len(_RATE_LOG)
                 print(
                     f"  缓存更新：{i}/{total} | {code} {name} | "
-                    f"预计剩余：{remaining / 60:.1f} 分钟",
+                    f"剩余 {remaining_s/60:.1f}min | 总请求：{_REQ_TOTAL} | 60s: {rate_now}次",
                     end="\r",
                     flush=True,
                 )
-                time.sleep(0.03)
-            print()
-            print(f"  缓存更新完成，耗时 {time.time()-phase1_start:.1f} 秒")
 
-            # 最后统一抢救一轮失败的股票
-            if failed_stocks:
-                print(f"\n  最后尝试抢救 {len(failed_stocks)} 只失败的股票...")
-                try:
-                    bs.logout()
-                except Exception:
-                    pass
-                time.sleep(2)
-                try:
-                    lg = bs.login()
-                    if getattr(lg, "error_code", None) == "0":
-                        rescued = 0
-                        for fcode, fname in failed_stocks:
-                            try:
-                                get_hist_data_baostock(fcode, cache_only=False, force_update=do_update)
-                                rescued += 1
-                                print(f"    {fcode} {fname} ✅")
-                            except Exception:
-                                print(f"    {fcode} {fname} ❌")
-                        print(f"  抢救结果：{rescued}/{len(failed_stocks)} 成功")
-                    else:
-                        print(f"  抢救前重登失败，跳过。")
-                except Exception:
-                    print(f"  抢救前重登异常，跳过。")
-
-        # ================================================================
-        # 阶段2：多线程从缓存扫描
-        # ================================================================
-        use_multithread = workers > 1
-        scan_cache_only = True  # 阶段2永远只读缓存
-
-        if use_multithread:
-            print(f"\n阶段2：{workers}线程从缓存扫描...")
-            tasks = [
-                (str(row["代码"]).zfill(6), row.to_dict())
-                for _, row in stock_pool_df.iterrows()
-            ]
-
-            completed = 0
-            with ThreadPoolExecutor(max_workers=workers) as executor:
-                futures = {}
-                for code, meta in tasks:
-                    futures[
-                        executor.submit(check_main_rising_signal, code, True, False)
-                    ] = (code, meta)
-
-                for future in as_completed(futures):
-                    code, meta = futures[future]
-                    completed += 1
-                    try:
-                        is_hit, hit_strategy, info = future.result()
-                    except Exception:
-                        is_hit, hit_strategy, info = False, "", None
-
-                    if is_hit:
-                        result = dict(meta)
-                        result["命中策略"] = hit_strategy
-                        if info:
-                            result.update(info)
-                        result_list.append(result)
-
-                    if completed % 100 == 0 or completed == total:
-                        elapsed = time.time() - scan_start_time
-                        avg_s = elapsed / completed
-                        remaining = (total - completed) * avg_s
-                        print(
-                            f"  扫描进度：{completed}/{total} | "
-                            f"命中数：{len(result_list)} | "
-                            f"预计剩余：{remaining / 60:.1f} 分钟",
-                            flush=True,
-                        )
+        if uw == 1:
+            for item in stocks_list:
+                update_one(item)
         else:
-            # ---- 单线程模式 ----
-            print()
-            for scan_no, (_, row) in enumerate(stock_pool_df.iterrows(), start=1):
-                code = str(row["代码"]).zfill(6)
-                name = row["名称"]
+            with ThreadPoolExecutor(max_workers=uw) as executor:
+                list(executor.map(update_one, stocks_list))
 
-                is_hit, hit_strategy, info = check_main_rising_signal(
-                    code, cache_only=scan_cache_only, force_update=False,
-                )
+        print()
+        print(f"  缓存更新完成，耗时 {(time.time()-phase1_start)/60:.1f} 分钟")
+
+        # ── BaoStock 阶段1完后登出 ──
+        if DATA_SOURCE == "baostock":
+            try: bs.logout()
+            except Exception: pass
+
+        # ---- 抢救失败的股票 ----
+        if failed_stocks:
+            # BaoStock 抢救前重新登入
+            if DATA_SOURCE == "baostock":
+                print(f"\n  BaoStock 重新登入，准备抢救 {len(failed_stocks)} 只...")
+                for attempt in range(2):
+                    try:
+                        lg2 = bs.login()
+                        if getattr(lg2, "error_code", None) == "0":
+                            break
+                    except Exception:
+                        pass
+                    time.sleep(2)
+
+            print(f"\n  🔄 单线程抢救 {len(failed_stocks)} 只失败的股票...")
+            rescued = 0
+            still_failed: list[tuple[str, str]] = []
+            for fcode, fname in failed_stocks:
+                try:
+                    get_hist_data(fcode, cache_only=False, force_update=force_update)
+                    rescued += 1
+                    print(f"    {fcode} {fname} ✅")
+                except Exception as e:
+                    still_failed.append((fcode, fname))
+                    print(f"    {fcode} {fname} ❌ {str(e)[:60]}")
+                time.sleep(1.0)
+            print(f"  抢救结果：{rescued}/{len(failed_stocks)} 成功")
+            failed_stocks = still_failed
+
+            # BaoStock 抢救完后登出
+            if DATA_SOURCE == "baostock":
+                try: bs.logout()
+                except Exception: pass
+
+        if failed_stocks:
+            print(f"  ⚠️ {len(failed_stocks)} 只最终失败，使用旧缓存继续扫描")
+
+    # ================================================================
+    # 阶段2：多线程从缓存扫描
+    # ================================================================
+    use_multithread = workers > 1
+    scan_cache_only = True  # 阶段2永远只读缓存
+
+    if use_multithread:
+        print(f"\n阶段2：{workers}线程从缓存扫描...")
+        tasks = [
+            (str(row["代码"]).zfill(6), row.to_dict())
+            for _, row in stock_pool_df.iterrows()
+        ]
+
+        completed = 0
+        with ThreadPoolExecutor(max_workers=workers) as executor:
+            futures = {}
+            for code, meta in tasks:
+                futures[
+                    executor.submit(check_main_rising_signal, code, True, False)
+                ] = (code, meta)
+
+            for future in as_completed(futures):
+                code, meta = futures[future]
+                completed += 1
+                try:
+                    is_hit, hit_strategy, info = future.result()
+                except Exception:
+                    is_hit, hit_strategy, info = False, "", None
 
                 if is_hit:
-                    result = row.to_dict()
+                    result = dict(meta)
                     result["命中策略"] = hit_strategy
                     if info:
                         result.update(info)
                     result_list.append(result)
 
-                elapsed = time.time() - scan_start_time
-                remaining = (total - scan_no) * elapsed / scan_no
-                print(
-                    f"日线扫描进度：{scan_no}/{total} | "
-                    f"当前：{code} {name} | "
-                    f"命中数：{len(result_list)} | "
-                    f"预计剩余：{remaining / 60:.2f} 分钟",
-                    end="\r",
-                    flush=True,
-                )
-            print()
+                if completed % 100 == 0 or completed == total:
+                    elapsed = time.time() - scan_start_time
+                    avg_s = elapsed / completed
+                    remaining = (total - completed) * avg_s
+                    print(
+                        f"  扫描进度：{completed}/{total} | "
+                        f"命中数：{len(result_list)} | "
+                        f"预计剩余：{remaining / 60:.1f} 分钟",
+                        flush=True,
+                    )
+    else:
+        # ---- 单线程模式 ----
+        print()
+        for scan_no, (_, row) in enumerate(stock_pool_df.iterrows(), start=1):
+            code = str(row["代码"]).zfill(6)
+            name = row["名称"]
 
-    finally:
-        if allow_update:
-            bs.logout()
-            print("BaoStock 已退出。")
+            is_hit, hit_strategy, info = check_main_rising_signal(
+                code, cache_only=scan_cache_only, force_update=False,
+            )
+
+            if is_hit:
+                result = row.to_dict()
+                result["命中策略"] = hit_strategy
+                if info:
+                    result.update(info)
+                result_list.append(result)
+
+            elapsed = time.time() - scan_start_time
+            remaining = (total - scan_no) * elapsed / scan_no
+            print(
+                f"日线扫描进度：{scan_no}/{total} | "
+                f"当前：{code} {name} | "
+                f"命中数：{len(result_list)} | "
+                f"预计剩余：{remaining / 60:.2f} 分钟",
+                end="\r",
+                flush=True,
+            )
+        print()
 
     total_seconds = time.time() - scan_start_time
 
@@ -1339,3 +1361,141 @@ def scan_main_rising_stocks(
         result_df = result_df.sort_values(by="量比", ascending=False)
 
     return result_df
+
+
+def get_hist_data_baostock(
+    code: str,
+    use_cache: bool = True,
+    cache_only: bool = False,
+    force_update: bool = False,
+    auto_update_after_time: str = DAILY_AUTO_UPDATE_AFTER_TIME,
+) -> pd.DataFrame:
+    """
+    使用 BaoStock 获取个股日 K 线数据（前复权 adjustflag="2"）。
+    调用方负责 bs.login() / bs.logout()，本函数不管理会话。
+    内部最多重试 3 次，全失败则抛异常。
+    """
+    import baostock as bs
+
+    os.makedirs(HIST_CACHE_DIR, exist_ok=True)
+    code = str(code).zfill(6)
+    cache_file = os.path.join(HIST_CACHE_DIR, f"{code}_bs.csv")
+    end_date = datetime.now().strftime("%Y-%m-%d")
+
+    if code.startswith(("600", "601", "603", "605")):
+        bs_code = f"sh.{code}"
+    else:
+        bs_code = f"sz.{code}"
+
+    allow_update = should_update_daily_cache(
+        cache_only=cache_only, force_update=force_update, after_time=auto_update_after_time,
+    )
+
+    old_df = pd.DataFrame()
+    if use_cache and os.path.exists(cache_file):
+        old_df = pd.read_csv(cache_file, dtype={"代码": str})
+        if not old_df.empty and "日期" in old_df.columns:
+            old_df["日期"] = pd.to_datetime(old_df["日期"], errors="coerce")
+            old_df = old_df.dropna(subset=["日期"]).drop_duplicates(subset=["日期"], keep="last").sort_values("日期")
+            if not old_df.empty:
+                last_date = old_df["日期"].max()
+                if last_date.strftime("%Y-%m-%d") >= end_date:
+                    old_df["日期"] = old_df["日期"].dt.strftime("%Y-%m-%d"); return old_df
+                # 缓存是昨天的，且今天还未收盘 → 没必要联网白跑
+                now = datetime.now()
+                market_close = now.replace(hour=15, minute=0, second=0, microsecond=0)
+                if last_date.strftime("%Y-%m-%d") == (now - timedelta(days=1)).strftime("%Y-%m-%d") and now < market_close:
+                    old_df["日期"] = old_df["日期"].dt.strftime("%Y-%m-%d"); return old_df
+                if not allow_update:
+                    old_df["日期"] = old_df["日期"].dt.strftime("%Y-%m-%d"); return old_df
+                start_date = (last_date + timedelta(days=1)).strftime("%Y-%m-%d")
+            else:
+                start_date = (datetime.now() - timedelta(days=365)).strftime("%Y-%m-%d")
+                if not allow_update: return pd.DataFrame()
+        else:
+            start_date = (datetime.now() - timedelta(days=365)).strftime("%Y-%m-%d")
+            if not allow_update: return pd.DataFrame()
+    else:
+        start_date = (datetime.now() - timedelta(days=365)).strftime("%Y-%m-%d")
+        if not allow_update: return pd.DataFrame()
+
+    MAX_RETRIES = 3
+    last_error = None
+    for retry in range(MAX_RETRIES):
+        try:
+            rs = bs.query_history_k_data_plus(
+                bs_code,
+                fields="date,open,high,low,close,volume,amount,pctChg",
+                start_date=start_date, end_date=end_date,
+                frequency="d", adjustflag="2",
+            )
+            if rs.error_code != "0":
+                raise ConnectionError(f"{code} BaoStock查询失败：{rs.error_msg}")
+
+            data_list = []
+            while rs.next():
+                data_list.append(rs.get_row_data())
+
+            if data_list:
+                new_df = pd.DataFrame(data_list, columns=rs.fields)
+                new_df = new_df.rename(columns={
+                    "date": "日期", "open": "开盘", "high": "最高",
+                    "low": "最低", "close": "收盘", "volume": "成交量",
+                    "amount": "成交额", "pctChg": "涨跌幅",
+                })
+                new_df["代码"] = code
+                for col in ["开盘", "最高", "最低", "收盘", "成交量", "成交额", "涨跌幅"]:
+                    new_df[col] = pd.to_numeric(new_df[col], errors="coerce")
+                new_df["日期"] = pd.to_datetime(new_df["日期"])
+
+                if not old_df.empty:
+                    df = pd.concat([old_df, new_df], ignore_index=True)
+                else:
+                    df = new_df
+                df = df.drop_duplicates(subset=["日期"], keep="last").sort_values("日期")
+                cutoff_date = datetime.now() - timedelta(days=365)
+                df = df[df["日期"] >= cutoff_date]
+                df["日期"] = df["日期"].dt.strftime("%Y-%m-%d")
+                df.to_csv(cache_file, index=False, encoding="utf-8-sig")
+                time.sleep(0.2)  # BaoStock 服务器脆弱，发慢点防断连
+                return df
+            else:
+                if not old_df.empty:
+                    old_df["日期"] = old_df["日期"].dt.strftime("%Y-%m-%d"); return old_df
+                return pd.DataFrame()
+
+        except Exception as e:
+            last_error = e
+            if retry < MAX_RETRIES - 1:
+                # socket 错误等久一点，给服务器喘息时间
+                err_str = str(e).lower()
+                is_socket = any(kw in err_str for kw in ["10054", "10038", "10053", "socket", "reset", "broken", "pipe"])
+                wait = 5 if is_socket else 2 * (retry + 1)
+                time.sleep(wait)
+
+    # 重试耗尽
+    if not old_df.empty:
+        old_df["日期"] = old_df["日期"].dt.strftime("%Y-%m-%d"); return old_df
+    raise last_error
+
+
+def get_hist_data(
+    code: str,
+    use_cache: bool = True,
+    cache_only: bool = False,
+    force_update: bool = False,
+    auto_update_after_time: str = DAILY_AUTO_UPDATE_AFTER_TIME,
+) -> pd.DataFrame:
+    """
+    统一日K数据获取入口，根据 config.DATA_SOURCE 自动切换。
+    """
+    if DATA_SOURCE == "baostock":
+        return get_hist_data_baostock(
+            code, use_cache=use_cache, cache_only=cache_only,
+            force_update=force_update, auto_update_after_time=auto_update_after_time,
+        )
+    else:
+        return get_hist_data_tushare(
+            code, use_cache=use_cache, cache_only=cache_only,
+            force_update=force_update, auto_update_after_time=auto_update_after_time,
+        )

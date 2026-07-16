@@ -69,9 +69,9 @@ def _find_fallback_file() -> Path | None:
     return path if path.exists() else None
 
 
-def _load_stocks() -> tuple[list[dict[str, Any]], str, str, list[dict]]:
+def _load_stocks() -> tuple[list[dict[str, Any]], str, str, list[dict], dict | None]:
     """
-    加载最新选股结果，返回 (股票列表, 更新时间, 数据来源)。
+    加载最新选股结果，返回 (股票列表, 更新时间, 数据来源, tabGroups, marketContext)。
 
     优先级：
     1. mini_program_stocks.json（daily_report.py 生成，含 ML 数据）
@@ -88,6 +88,7 @@ def _load_stocks() -> tuple[list[dict[str, Any]], str, str, list[dict]]:
                 data = json.load(f)
             stocks = data.get("stocks", [])
             tab_groups = data.get("tabGroups", [])
+            market_context = data.get("marketContext", None)
             mtime = os.path.getmtime(str(json_path))
             update_time = datetime.fromtimestamp(mtime).strftime("%Y-%m-%d %H:%M:%S")
             source = f"{MINI_PROGRAM_JSON} ({data.get('source', 'daily_report')})"
@@ -109,7 +110,7 @@ def _load_stocks() -> tuple[list[dict[str, Any]], str, str, list[dict]]:
                 s.setdefault("mlModels", [])
                 s.setdefault("categories", [])
 
-            return stocks, update_time, source, tab_groups
+            return stocks, update_time, source, tab_groups, market_context
         except Exception as e:
             print(f"[API] 读取 JSON 失败：{e}，回退到 xlsx")
 
@@ -117,11 +118,11 @@ def _load_stocks() -> tuple[list[dict[str, Any]], str, str, list[dict]]:
     file_path = _find_latest_signal_file() or _find_fallback_file()
 
     if file_path is None:
-        return [], datetime.now().strftime("%Y-%m-%d %H:%M:%S"), "无数据", []
+        return [], datetime.now().strftime("%Y-%m-%d %H:%M:%S"), "无数据", [], None
 
     df = pd.read_excel(file_path, dtype={"代码": str})
     if df.empty:
-        return [], datetime.now().strftime("%Y-%m-%d %H:%M:%S"), "空文件", []
+        return [], datetime.now().strftime("%Y-%m-%d %H:%M:%S"), "空文件", [], None
 
     if "代码" in df.columns:
         df["代码"] = df["代码"].astype(str).str.zfill(6)
@@ -157,7 +158,7 @@ def _load_stocks() -> tuple[list[dict[str, Any]], str, str, list[dict]]:
     # 按评分降序排列
     stocks.sort(key=lambda x: x["score"], reverse=True)
 
-    return stocks, update_time, source, []
+    return stocks, update_time, source, [], None
 
 
 def _compute_score(row: pd.Series) -> int:
@@ -234,7 +235,7 @@ def get_stocks():
     }
     """
     try:
-        stocks, update_time, source, tab_groups = _load_stocks()
+        stocks, update_time, source, tab_groups, market_context = _load_stocks()
 
         return jsonify({
             "success": True,
@@ -243,6 +244,7 @@ def get_stocks():
             "total": len(stocks),
             "stocks": stocks,
             "tabGroups": tab_groups,
+            "marketContext": market_context,
         })
     except Exception as e:
         traceback.print_exc()

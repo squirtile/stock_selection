@@ -168,10 +168,10 @@ def get_trade_date(pro, target_date: str = None, prev: bool = False) -> str:
             df_cal = pro.trade_cal(exchange="SSE", start_date=test_date, end_date=test_date)
             if df_cal is not None and not df_cal.empty:
                 if df_cal.iloc[0].get("is_open", 0) == 1:
-                    return test_date
+                    return test_date  # ← 确认交易日才返回
         except Exception:
             pass
-        return test_date
+        # 不是交易日，继续回溯
 
     return (datetime.now() - timedelta(days=1)).strftime("%Y%m%d")
 

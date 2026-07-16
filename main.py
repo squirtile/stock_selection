@@ -895,6 +895,7 @@ def run_daily(args=None):
         cache_only=bool(getattr(args, "daily_cache_only", False)),
         force_update=bool(getattr(args, "force_update_daily", False)),
         workers=getattr(args, "workers", 1),
+        update_workers=getattr(args, "update_workers", 1),
     )
 
     if signal_df is None or signal_df.empty:
@@ -1221,7 +1222,14 @@ def parse_args():
         "--workers",
         type=int,
         default=2,
-        help="日线扫描并发线程数，默认2。建议≤CPU核数。联网更新阶段始终单线程。",
+        help="阶段2（缓存扫描）并发线程数，默认2。建议≤CPU核数。",
+    )
+
+    parser.add_argument(
+        "--update-workers",
+        type=int,
+        default=1,
+        help="阶段1（联网更新日K缓存）并发线程数，默认1。代理版 Tushare 对并发敏感，建议保持1。",
     )
 
     parser.add_argument(

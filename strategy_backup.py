@@ -5,7 +5,10 @@ import time
 from datetime import datetime, timedelta
 
 import pandas as pd
-import baostock as bs
+import numpy as np
+import pandas as pd
+
+from data_loader import get_tushare_pro
 
 from strategies import evaluate_daily_strategies
 
@@ -34,186 +37,8 @@ def check_secondary_filters(row) -> bool:
     )
 
 
-def get_bs_code(code: str) -> str:
-    """
-    转换成 BaoStock 代码格式。
-
-    上海：sh.600xxx / sh.601xxx / sh.603xxx / sh.605xxx
-    深圳：sz.000xxx / sz.001xxx / sz.002xxx / sz.003xxx
-    """
-
-    code = str(code).zfill(6)
-
-    if code.startswith(("600", "601", "603", "605")):
-        return f"sh.{code}"
-
-    return f"sz.{code}"
-
-
-def get_hist_data_baostock(code: str, use_cache: bool = True) -> pd.DataFrame:
-    """
-    使用 BaoStock 获取个股日 K 线数据。
-
-    增量缓存逻辑：
-    1. 如果没有缓存，首次获取最近150个自然日数据
-    2. 如果已有缓存，只从缓存最后日期之后开始更新
-    3. 合并新旧数据，按日期去重
-    4. 打印当前使用的最新K线日期
-    """
-
-    os.makedirs(HIST_CACHE_DIR, exist_ok=True)
-
-    code = str(code).zfill(6)
-    cache_file = os.path.join(HIST_CACHE_DIR, f"{code}_bs.csv")
-
-    end_date = datetime.now().strftime("%Y-%m-%d")
-    bs_code = get_bs_code(code)
-
-    old_df = pd.DataFrame()
-
-    if use_cache and os.path.exists(cache_file):
-        old_df = pd.read_csv(cache_file, dtype={"代码": str})
-
-        if not old_df.empty and "日期" in old_df.columns:
-            old_df["日期"] = pd.to_datetime(old_df["日期"])
-            last_date = old_df["日期"].max()
-
-            # 如果缓存已经更新到今天，直接使用
-            if last_date.strftime("%Y-%m-%d") >= end_date:
-                if VERBOSE_KLINE_LOG:
-                    print(f"{code} 使用本地BaoStock缓存，最新K线日期：{last_date.strftime('%Y-%m-%d')}")
-                old_df["日期"] = old_df["日期"].dt.strftime("%Y-%m-%d")
-                return old_df
-
-            # 从最后日期的下一天开始补数据
-            start_date = (last_date + timedelta(days=1)).strftime("%Y-%m-%d")
-            if VERBOSE_KLINE_LOG:
-                print(f"{code} 本地BaoStock缓存最新K线日期：{last_date.strftime('%Y-%m-%d')}，开始增量更新...")
-        else:
-            start_date = (datetime.now() - timedelta(days=365)).strftime("%Y-%m-%d")
-            if VERBOSE_KLINE_LOG:
-                print(f"{code} 缓存文件异常，重新获取最近365天K线...")
-    else:
-        start_date = (datetime.now() - timedelta(days=365)).strftime("%Y-%m-%d")
-        if VERBOSE_KLINE_LOG:
-            print(f"{code} 无本地BaoStock缓存，首次获取最近365天K线...")
-
-    try:
-        rs = bs.query_history_k_data_plus(
-            bs_code,
-            fields="date,open,high,low,close,volume,amount,pctChg",
-            start_date=start_date,
-            end_date=end_date,
-            frequency="d",
-            adjustflag="2"
-        )
-
-        if rs.error_code != "0":
-            print(f"{code} BaoStock查询失败：{rs.error_msg}")
-
-            # 如果新数据获取失败，但有旧缓存，就先用旧缓存
-            if not old_df.empty:
-                last_date = old_df["日期"].max()
-                if VERBOSE_KLINE_LOG:
-                    print(f"{code} 使用旧缓存，最新K线日期：{last_date.strftime('%Y-%m-%d')}")
-                old_df["日期"] = old_df["日期"].dt.strftime("%Y-%m-%d")
-                return old_df
-
-            return pd.DataFrame()
-
-        data_list = []
-
-        while rs.next():
-            data_list.append(rs.get_row_data())
-
-        if data_list:
-            new_df = pd.DataFrame(data_list, columns=rs.fields)
-
-            new_df = new_df.rename(
-                columns={
-                    "date": "日期",
-                    "open": "开盘",
-                    "high": "最高",
-                    "low": "最低",
-                    "close": "收盘",
-                    "volume": "成交量",
-                    "amount": "成交额",
-                    "pctChg": "涨跌幅",
-                }
-            )
-
-            new_df["代码"] = code
-
-            numeric_cols = [
-                "开盘",
-                "最高",
-                "最低",
-                "收盘",
-                "成交量",
-                "成交额",
-                "涨跌幅",
-            ]
-
-            for col in numeric_cols:
-                new_df[col] = pd.to_numeric(new_df[col], errors="coerce")
-
-            new_df["日期"] = pd.to_datetime(new_df["日期"])
-
-            if not old_df.empty:
-                df = pd.concat([old_df, new_df], ignore_index=True)
-            else:
-                df = new_df
-
-            # 日期去重，保留最后一次
-            df = df.drop_duplicates(subset=["日期"], keep="last")
-
-            # 按日期排序
-            df = df.sort_values("日期")
-
-            # 只保留最近365个自然日附近的数据，避免文件无限变大
-            cutoff_date = datetime.now() - timedelta(days=365)
-            df = df[df["日期"] >= cutoff_date]
-
-            latest_date = df["日期"].max().strftime("%Y-%m-%d")
-            if VERBOSE_KLINE_LOG:
-                print(f"{code} BaoStock K线已更新到：{latest_date}")
-
-            # 保存时日期转成字符串
-            df["日期"] = df["日期"].dt.strftime("%Y-%m-%d")
-            df.to_csv(cache_file, index=False, encoding="utf-8-sig")
-
-            return df
-
-        else:
-            # 没有新数据，说明可能今天还没更新，直接用旧缓存
-            if not old_df.empty:
-                last_date = old_df["日期"].max()
-                if VERBOSE_KLINE_LOG:
-                    print(f"{code} BaoStock暂无新数据，使用缓存，最新K线日期：{last_date.strftime('%Y-%m-%d')}")
-
-                old_df["日期"] = old_df["日期"].dt.strftime("%Y-%m-%d")
-                return old_df
-
-            print(f"{code} BaoStock没有返回K线数据。")
-            return pd.DataFrame()
-
-    except Exception as e:
-        print(f"{code} BaoStock K线获取失败：{e}")
-
-        if not old_df.empty:
-            last_date = old_df["日期"].max()
-            if VERBOSE_KLINE_LOG:
-                print(f"{code} 使用旧缓存，最新K线日期：{last_date.strftime('%Y-%m-%d')}")
-
-            old_df["日期"] = old_df["日期"].dt.strftime("%Y-%m-%d")
-            return old_df
-
-        return pd.DataFrame()
-
-
-# 兼容旧函数名：如果其他地方还调用 get_hist_data_tushare，也转到 BaoStock。
-def get_hist_data_tushare(code: str, use_cache: bool = True, pro=None) -> pd.DataFrame:
-    return get_hist_data_baostock(code, use_cache=use_cache)
+# 兼容别名：从 strategy.py 导入（已全面替换为 Tushare）
+from strategy import get_hist_data_tushare as get_hist_data_baostock, get_ts_code as get_bs_code
 
 
 def prepare_hist_data(df: pd.DataFrame) -> pd.DataFrame:
@@ -676,13 +501,7 @@ def scan_main_rising_stocks(stock_pool_df: pd.DataFrame) -> pd.DataFrame:
     result_list = []
     total = len(stock_pool_df)
 
-    print("正在登录 BaoStock，用于第二步 K 线扫描...")
-    lg = bs.login()
-
-    if lg.error_code != "0":
-        print(f"BaoStock 登录失败：{lg.error_msg}")
-        return pd.DataFrame()
-
+    print("Tushare 无需登录，直接扫描...")
     scan_start_time = time.time()
 
     try:
@@ -721,8 +540,7 @@ def scan_main_rising_stocks(stock_pool_df: pd.DataFrame) -> pd.DataFrame:
         print()
 
     finally:
-        bs.logout()
-        print("BaoStock 已退出。")
+        pass  # Tushare 无需登出
 
     total_seconds = time.time() - scan_start_time
 

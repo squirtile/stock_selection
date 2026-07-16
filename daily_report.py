@@ -40,19 +40,20 @@ PKL_DIR = os.path.join(PROJECT_ROOT, "pkl")
 _CPU_COUNT = os.cpu_count() or 2
 _WORKERS_MAIN = max(1, min(_CPU_COUNT - 2, 12))      # main.py 留2核给系统
 _WORKERS_ML = max(1, min(_CPU_COUNT // 2, 6))         # ml_scan 用一半核
+_WORKERS_UPDATE = 1  # 阶段1联网更新线程数（代理版 Tushare 敏感，保持1）
 
 
 # ============================================================
 # 1. 运行 main.py
 # ============================================================
 
-def run_main_py(force_update: bool = False, cache_only: bool = False) -> str:
+def run_main_py(force_update: bool = False, cache_only: bool = False, update_workers: int = 1) -> str:
     """运行 main.py，返回输出的 Excel 文件路径"""
     print("=" * 70)
     print("📊 第一步：运行 main.py 策略信号扫描")
     print("=" * 70)
 
-    cmd = [sys.executable, "main.py", "--workers", str(_WORKERS_MAIN), "--no-email"]
+    cmd = [sys.executable, "main.py", "--workers", str(_WORKERS_MAIN), "--update-workers", str(update_workers), "--no-email"]
     if cache_only:
         cmd.append("--daily-cache-only")
     elif force_update:
@@ -124,6 +125,70 @@ def run_ml_scan_all_pkls(ml_scan_workers: int = _WORKERS_ML) -> dict[str, str]:
         else:
             print(f"  ⚠️ {pkl_name} 失败（返回码 {r.returncode}）")
     return results
+
+
+def run_pregame_json_scripts() -> None:
+    """盘前数据准备：板块热度、资金流向、连板天梯"""
+    scripts = [
+        ("sector_heat.py", "板块热度"),
+        ("money_flow.py", "资金流向"),
+        ("limit_up_ladder.py", "连板天梯"),
+    ]
+    print("\n" + "=" * 70)
+    print("📊 第 2.3 步：盘前数据准备")
+    print("=" * 70)
+
+    for script, name in scripts:
+        script_path = os.path.join(PROJECT_ROOT, "tools", script)
+        if not os.path.exists(script_path):
+            print(f"  ⚠️ tools/{script} 不存在，跳过 {name}。")
+            continue
+        print(f"  ⏳ 生成 {name}...")
+        r = subprocess.run(
+            [sys.executable, script_path, "--json"],
+            cwd=PROJECT_ROOT,
+            capture_output=True, text=True,
+            encoding="utf-8", errors="replace",
+            env={**os.environ, "PYTHONIOENCODING": "utf-8"},
+        )
+        if r.returncode == 0:
+            print(f"  [OK] {name} 完成")
+        else:
+            err = (r.stderr or r.stdout).strip()[-120:]
+            print(f"  [FAIL] {name}: {err}")
+        time.sleep(0.5)
+
+
+def run_market_context() -> str:
+    """运行市场环境评估（生成板块热度标签）"""
+    print("\n" + "=" * 70)
+    print("📊 第 2.5 步：市场环境评估")
+    print("=" * 70)
+
+    market_script = os.path.join(PROJECT_ROOT, "tools", "market_context.py")
+    if not os.path.exists(market_script):
+        print("⚠️ tools/market_context.py 不存在，跳过。")
+        return ""
+
+    t0 = time.time()
+    r = subprocess.run(
+        [sys.executable, market_script, "--json"],
+        cwd=PROJECT_ROOT,
+        capture_output=True, text=True,
+        encoding="utf-8", errors="replace",
+        env={**os.environ, "PYTHONIOENCODING": "utf-8"},
+    )
+    elapsed = (time.time() - t0)
+    print(r.stdout.strip())
+    if r.stderr.strip():
+        print(r.stderr.strip())
+    if r.returncode != 0:
+        print(f"⚠️ 市场环境评估失败（返回码 {r.returncode}）")
+        return ""
+
+    output_path = os.path.join(OUTPUT_DIR, "market_context.json")
+    print(f"  ✅ 完成，耗时 {elapsed:.1f}s → {os.path.basename(output_path)}")
+    return output_path
 
 
 # ============================================================
@@ -301,6 +366,52 @@ def _safe_float(val):
             return None
         return round(float(val), 2)
     except (ValueError, TypeError):
+        return None
+
+
+# ── 行业→概念映射（与 tools/market_context.py 保持同步）──
+MARKET_INDUSTRY_TO_CONCEPT = {
+    "半导体": "芯片概念", "元器件": "消费电子概念", "软件服务": "人工智能",
+    "通信设备": "5G", "IT设备": "信创", "互联网": "数字经济",
+    "化学制药": "创新药", "生物制药": "创新药", "中成药": "中药",
+    "医疗保健": "医疗器械概念", "医药商业": "医药电商",
+    "化学原料": "氢能源", "化工原料": "锂电池概念", "农药化肥": "化肥",
+    "塑料": "可降解塑料", "橡胶": "汽车热管理", "化纤": "碳纤维",
+    "钢铁": "特钢概念", "小金属": "稀土永磁", "黄金": "黄金概念",
+    "铜": "金属铜", "铝": "工业金属", "煤炭开采": "煤炭概念",
+    "石油开采": "天然气", "石油加工": "石油加工贸易",
+    "电力": "绿色电力", "水力发电": "抽水蓄能", "火力发电": "碳中和",
+    "新型电力": "储能", "供气供热": "天然气", "环境保护": "碳中和",
+    "污水处理": "污水处理", "固废处理": "固废处理",
+    "建筑工程": "新型城镇化", "装修装饰": "装配式建筑", "房地产": "物业管理",
+    "水泥": "水泥概念", "玻璃": "光伏概念", "陶瓷": "建筑材料",
+    "机械基件": "机器人概念", "专用机械": "工业母机", "通用机械": "高端装备",
+    "电气设备": "充电桩", "电网设备": "智能电网", "仪器仪表": "传感器",
+    "运输设备": "飞行汽车(eVTOL)", "汽车整车": "新能源汽车",
+    "汽车配件": "汽车零部件", "汽车服务": "汽车服务及其他",
+    "家用电器": "智能家居", "家居用品": "智能家居", "食品": "预制菜",
+    "饲料": "猪肉", "农业综合": "乡村振兴", "种植业": "农业种植",
+    "渔业": "水产养殖", "服饰": "网红经济", "纺织": "人民币贬值受益",
+    "造纸": "造纸", "广告包装": "文化传媒概念", "文教休闲": "体育产业",
+    "影视音像": "短剧游戏", "出版业": "知识产权保护",
+    "旅游服务": "旅游概念", "酒店餐饮": "预制菜", "超市连锁": "新零售",
+    "百货": "免税店", "水运": "航运概念", "空运": "机场航运",
+    "港口": "自由贸易港", "铁路": "高铁", "路桥": "公路铁路运输",
+    "多元金融": "互联网金融", "证券": "证券", "保险": "保险", "银行": "银行",
+    "日用化工": "化妆品", "轻工机械": "工业母机", "综合类": "国企改革",
+}
+
+
+def _load_market_context() -> dict | None:
+    """加载市场环境评估 JSON（由 tools/market_context.py 生成）"""
+    import json
+    ctx_path = os.path.join(OUTPUT_DIR, "market_context.json")
+    if not os.path.exists(ctx_path):
+        return None
+    try:
+        with open(ctx_path, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
         return None
 
 
@@ -666,12 +777,52 @@ def build_mini_program_json(signal_file: str, ml_results: dict[str, str]) -> str
                         s['wavePullback'] = round((low_val / peak_val - 1) * 100, 1)
     print(f"  K线数据：{kline_count}/{len(final_stocks)} 只")
 
+    # ---------- 板块热度标签 ----------
+    market_context = _load_market_context()
+    market_trend = market_context.get("market", {}).get("label", "📊 震荡") if market_context else "📊 震荡"
+    sector_labels: dict = (market_context or {}).get("sectors", {})
+
+    labeled_count = 0
+    for s in final_stocks:
+        industry = s.get("industry", "")
+        concept = s.get("concept", "")
+        label_info = None
+
+        # 1) 优先用行业名直接匹配
+        if industry:
+            label_info = sector_labels.get(industry)
+        # 2) 行业不匹配则尝试用题材（概念）名
+        if not label_info and concept:
+            label_info = sector_labels.get(concept)
+        # 3) 再尝试行业→概念映射
+        if not label_info and industry:
+            mapped_concept = MARKET_INDUSTRY_TO_CONCEPT.get(industry, "")
+            if mapped_concept:
+                label_info = sector_labels.get(mapped_concept)
+
+        if label_info:
+            s["sectorLabel"] = label_info.get("label", "❄️ 冷门")
+            s["sectorHeatScore"] = label_info.get("score", -1)
+            labeled_count += 1
+        else:
+            s["sectorLabel"] = ""
+            s["sectorHeatScore"] = 0
+
+        s["marketTrend"] = market_trend
+
+    print(f"  板块标签：{labeled_count}/{len(final_stocks)} 只已标记")
+
     # ---------- 写 JSON ----------
     result = {
         "time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         "source": f"daily_report + {len(ml_results)} ML models",
         "total": len(final_stocks),
         "tabGroups": tab_groups,
+        "marketContext": {
+            "trend": market_context.get("market", {}).get("trend", "neutral") if market_context else "neutral",
+            "label": market_trend,
+            "tradeDate": market_context.get("trade_date", "") if market_context else "",
+        },
         "stocks": final_stocks,
     }
 
@@ -906,6 +1057,7 @@ def main():
     parser.add_argument("--force-update", action="store_true", help="强制更新 BaoStock 日线缓存")
     parser.add_argument("--cache-only", action="store_true", help="强制只用本地缓存（周末/调试用，不请求BaoStock）")
     parser.add_argument("--no-email", action="store_true", help="跳过邮件和飞书发送")
+    parser.add_argument("--update-workers", type=int, default=_WORKERS_UPDATE, help="阶段1联网更新线程数")
     args = parser.parse_args()
 
     start_time = datetime.now()
@@ -913,13 +1065,19 @@ def main():
     total_start = time.time()
 
     # 1. 策略信号
-    signal_file = run_main_py(force_update=args.force_update, cache_only=args.cache_only)
+    signal_file = run_main_py(force_update=args.force_update, cache_only=args.cache_only, update_workers=args.update_workers)
 
     # 2. ML 扫描
     ml_results = run_ml_scan_all_pkls()
 
     # 3. 合并
     summary_file = build_summary_excel(signal_file, ml_results)
+
+    # 3.3 板块热度 / 资金流向 / 连板天梯（盘前数据准备）
+    run_pregame_json_scripts()
+
+    # 3.4 市场环境评估（板块热度标签）
+    run_market_context()
 
     # 3.5 生成小程序 JSON
     build_mini_program_json(signal_file, ml_results)
