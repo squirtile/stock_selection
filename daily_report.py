@@ -47,7 +47,8 @@ _WORKERS_UPDATE = 1  # 阶段1联网更新线程数（代理版 Tushare 敏感�
 # 1. 运行 main.py
 # ============================================================
 
-def run_main_py(force_update: bool = False, cache_only: bool = False, update_workers: int = 1) -> str:
+def run_main_py(force_update: bool = False, cache_only: bool = False, update_workers: int = 1,
+                update_minute: bool = False, minute_days: int = 365, minute_max_stocks: int = 0) -> str:
     """运行 main.py，返回输出的 Excel 文件路径"""
     print("=" * 70)
     print("📊 第一步：运行 main.py 策略信号扫描")
@@ -60,6 +61,13 @@ def run_main_py(force_update: bool = False, cache_only: bool = False, update_wor
         cmd.append("--force-update-daily")
     # --daily-cache-only：强制只用缓存（周末/调试用）
     # 不加参数：17:30 前用缓存，17:30 后自动拉 BaoStock
+
+    # 分钟K线缓存更新（5分钟 + 30分钟，Tushare stk_mins）
+    if update_minute:
+        cmd.append("--update-minute")
+        cmd.extend(["--minute-days", str(minute_days)])
+        if minute_max_stocks > 0:
+            cmd.extend(["--minute-update-stocks", str(minute_max_stocks)])
 
     t0 = time.time()
     result = subprocess.run(cmd, cwd=PROJECT_ROOT)
@@ -1058,6 +1066,9 @@ def main():
     parser.add_argument("--cache-only", action="store_true", help="强制只用本地缓存（周末/调试用，不请求BaoStock）")
     parser.add_argument("--no-email", action="store_true", help="跳过邮件和飞书发送")
     parser.add_argument("--update-workers", type=int, default=_WORKERS_UPDATE, help="阶段1联网更新线程数")
+    parser.add_argument("--update-minute", action="store_true", help="日线扫描后自动更新 5分钟/30分钟缓存（Tushare stk_mins）")
+    parser.add_argument("--minute-days", type=int, default=365, help="分钟缓存保留天数，默认365")
+    parser.add_argument("--minute-max-stocks", type=int, default=0, help="分钟缓存更新最大股票数，0=全部")
     args = parser.parse_args()
 
     start_time = datetime.now()
@@ -1065,7 +1076,14 @@ def main():
     total_start = time.time()
 
     # 1. 策略信号
-    signal_file = run_main_py(force_update=args.force_update, cache_only=args.cache_only, update_workers=args.update_workers)
+    signal_file = run_main_py(
+        force_update=args.force_update,
+        cache_only=args.cache_only,
+        update_workers=args.update_workers,
+        update_minute=args.update_minute,
+        minute_days=args.minute_days,
+        minute_max_stocks=args.minute_max_stocks,
+    )
 
     # 2. ML 扫描
     ml_results = run_ml_scan_all_pkls()

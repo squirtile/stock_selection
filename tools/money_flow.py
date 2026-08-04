@@ -123,6 +123,14 @@ def main():
     parser.add_argument("--json", action="store_true", help="导出JSON")
     args = parser.parse_args()
 
+    # 如果没指定日期，且当前时间在 18:00 之前，自动用上一个交易日
+    # （因为盘中 Tushare 还没有当天的资金流向数据）
+    if args.date is None:
+        now = datetime.now()
+        if now.hour < 18:
+            print("⏰ 当前在 18:00 之前，自动使用前一交易日数据...")
+            args.date = (now - timedelta(days=1)).strftime("%Y%m%d")
+
     print("🔗 连接 Tushare...")
     disable_proxy()
     pro = get_tushare_pro()

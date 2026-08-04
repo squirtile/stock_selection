@@ -249,15 +249,41 @@ def load_a_stock_spot() -> pd.DataFrame:
     return result
 
 
+def _find_trade_date_by_cal(pro, base: datetime, start_offset: int = 0) -> str | None:
+    """通过 trade_cal API 向前回溯找交易日，失败返回 None"""
+    for i in range(start_offset, start_offset + 14):
+        test_date = (base - timedelta(days=i)).strftime("%Y%m%d")
+        test_dt = datetime.strptime(test_date, "%Y%m%d")
+        if test_dt.weekday() >= 5:
+            continue
+        try:
+            df_cal = pro.trade_cal(exchange="SSE", start_date=test_date, end_date=test_date)
+            if df_cal is not None and not df_cal.empty:
+                if df_cal.iloc[0].get("is_open", 0) == 1:
+                    return test_date
+        except Exception:
+            pass
+    return None
+
+
+def _find_trade_date_weekday(base: datetime, start_offset: int = 0) -> str:
+    """纯工作日回溯（trade_cal 不可用时的兜底），假设周一至周五都是交易日"""
+    for i in range(start_offset, start_offset + 14):
+        d = base - timedelta(days=i)
+        if d.weekday() < 5:
+            return d.strftime("%Y%m%d")
+    return base.strftime("%Y%m%d")
+
+
 def get_latest_trade_date(pro, target_date: str = None, prev: bool = False) -> str:
     """
     获取有效交易日。
 
-    与各工具脚本中分散的 get_trade_date() 不同，这个版本：
     - 对于「今天」（周一至周五）：直接返回今天，不依赖 trade_cal 确认
-      （因为 Tushare trade_cal 可能当天还未标记为交易日，但数据可能已就绪）
-    - 对于历史日期：仍然通过 trade_cal 确认
+    - 对于历史日期 / prev=True：先尝试 trade_cal，失败则用纯工作日回溯
     - prev=True：返回 target_date 的前一个交易日
+    - 如果没指定日期且当前在 18:00 之前 → 自动返回上一交易日
+      （避免盘中获取当天资金/板块数据为空）
 
     返回格式：YYYYMMDD
     """
@@ -274,21 +300,21 @@ def get_latest_trade_date(pro, target_date: str = None, prev: bool = False) -> s
     # 如果是「今天」且是工作日 → 直接返回，不查 trade_cal
     if not prev and target_date is None:
         if base.weekday() < 5:
+            # 18:00 之前 → 返回上一工作日（盘中数据通常还没生成）
+            now = datetime.now()
+            if now.hour < 18:
+                yesterday = now - timedelta(days=1)
+                # 如果昨天是周末，继续往前找
+                while yesterday.weekday() >= 5:
+                    yesterday -= timedelta(days=1)
+                return yesterday.strftime("%Y%m%d")
             return today_str
 
-    # 向前回溯找交易日
+    # 先尝试 trade_cal
     start_offset = 1 if prev else 0
-    for i in range(start_offset, start_offset + 14):
-        test_date = (base - timedelta(days=i)).strftime("%Y%m%d")
-        test_dt = datetime.strptime(test_date, "%Y%m%d")
-        if test_dt.weekday() >= 5:
-            continue
-        try:
-            df_cal = pro.trade_cal(exchange="SSE", start_date=test_date, end_date=test_date)
-            if df_cal is not None and not df_cal.empty:
-                if df_cal.iloc[0].get("is_open", 0) == 1:
-                    return test_date
-        except Exception:
-            pass
+    result = _find_trade_date_by_cal(pro, base, start_offset)
+    if result:
+        return result
 
-    return (datetime.now() - timedelta(days=1)).strftime("%Y%m%d")
+    # trade_cal 不可用，用纯工作日回溯兜底
+    return _find_trade_date_weekday(base, start_offset)

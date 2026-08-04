@@ -1174,3 +1174,268 @@ class LimitUpPullbackDayTradeStrategy(BaseDailyStrategy):
             and row["涨停后缩量企稳"]
             and -4.0 < row["涨跌幅"] < 9.5
         )
+
+
+# ======================================================================================
+# W双底形态策略
+#
+# 核心逻辑：
+#   左底急跌 → 反弹至颈线 → 右底缩量不破前低 → 今日放量突破颈线 = 买入信号
+#
+# 条件（全部满足才命中）：
+#   ① 存在有效左底（20~55天前的最低点）
+#   ② 颈线有效反弹（颈线 ≥ 左底 × 1.08）
+#   ③ 右底 ≈ 左底（双底价差 ≤ 5%）
+#   ④ 右底缩量（右底区均量 < 左底区均量）
+#   ⑤ 今日收盘 > 颈线（突破确认）
+#   ⑥ 今日放量（成交量 > 20日均量 × 1.3）
+#   ⑦ 上涨趋势确认（MA20 ≥ MA60，收盘 > MA60）
+#   ⑧ 今日温和启动（涨幅 0.5%~9.5%，非涨停追高）
+# ======================================================================================
+
+class WBottomStrategy(BaseDailyStrategy):
+    """
+    W双底形态：左底急跌 → 颈线反弹 → 右底缩量确认 → 放量突破颈线。
+
+    与"二波形态"的区别：
+    - 二波形态：要求第一波大涨 ≥ 25%，偏 N 字回调再启动
+    - W双底：两底在同一价格区间（价差 ≤ 5%），偏底部反转
+    """
+
+    name = "W双底"
+    category = "突破反转"
+    group = "W双底"
+
+    def match(self, row: pd.Series) -> bool:
+        # ---- 必需字段检查 ----
+        need_fields = [
+            "收盘", "开盘", "涨跌幅", "成交量",
+            "SMA20", "SMA60",
+            "过去20日平均成交量",
+            "W_左底价格", "W_颈线价格", "W_右底价格",
+            "W_双底价差比", "W_颈线高度比", "W_右底缩量比",
+            "W_突破颈线", "W_放量突破",
+        ]
+        for f in need_fields:
+            if f not in row.index or pd.isna(row[f]):
+                return False
+
+        close     = float(row["收盘"])
+        open_     = float(row["开盘"])
+        pct       = float(row["涨跌幅"])
+        vol       = float(row["成交量"])
+        ma20      = float(row["SMA20"])
+        ma60      = float(row["SMA60"])
+        avg_vol20 = float(row["过去20日平均成交量"])
+
+        left_bot   = float(row["W_左底价格"])
+        neck       = float(row["W_颈线价格"])
+        right_bot  = float(row["W_右底价格"])
+        gap_ratio  = float(row["W_双底价差比"])
+        neck_h     = float(row["W_颈线高度比"])
+        vol_shrink = float(row["W_右底缩量比"])
+        breakout   = bool(row["W_突破颈线"])
+        vol_ok     = bool(row["W_放量突破"])
+
+        if close <= 0 or ma20 <= 0 or ma60 <= 0:
+            return False
+        if left_bot <= 0 or neck <= 0 or right_bot <= 0:
+            return False
+
+        # ---- 条件①：双底价差 ≤ 5%（两底在同一价格区间）----
+        if gap_ratio > 0.05:
+            return False
+
+        # ---- 条件②：颈线有效反弹（≥ 左底 × 1.08）----
+        if neck_h < 0.08:
+            return False
+
+        # ---- 条件③：右底缩量（右底区均量 < 左底区均量，温和放宽）----
+        if pd.notna(vol_shrink) and vol_shrink >= 1.0:
+            return False
+
+        # ---- 条件④：今日突破颈线 ----
+        if not breakout:
+            return False
+
+        # ---- 条件⑤：今日放量确认（量 > 20日均量 × 1.3）----
+        # if not vol_ok:
+        #     return False
+
+        # ---- 条件⑥：上涨趋势（MA20 ≥ MA60，收盘 > MA60）----
+        # if ma20 < ma60 * 0.98:
+        #     return False
+        # if close < ma60:
+        #     return False
+
+        # ---- 条件⑦：温和启动（涨幅 0.5%~9.5%，不追涨停）----
+        if pct < 0.5 or pct >= 9.5:
+            return False
+
+        # ---- 条件⑧：阳线 ----
+        # if close <= open_:
+        #     return False
+
+        return True
+
+    def evaluate(self, row: pd.Series) -> StrategySignal | None:
+        if not self.enabled:
+            return None
+
+        try:
+            if self.match(row):
+                parts = []
+                gap = _num(row, "W_双底价差比")
+                neck_h = _num(row, "W_颈线高度比")
+                vol_s = _num(row, "W_右底缩量比")
+                left_d = _num(row, "W_左底距今天数")
+                right_d = _num(row, "W_右底距今天数")
+
+                if pd.notna(gap):
+                    parts.append(f"双底价差{gap*100:.1f}%")
+                if pd.notna(neck_h):
+                    parts.append(f"颈线反弹{neck_h*100:.0f}%")
+                if pd.notna(vol_s) and vol_s < 1.0:
+                    parts.append(f"右底缩量{vol_s*100:.0f}%")
+                if pd.notna(left_d) and pd.notna(right_d):
+                    parts.append(f"左底{int(left_d)}天前/右底{int(right_d)}天前")
+
+                reason = "W双底突破: " + " | ".join(parts) if parts else "W双底突破"
+                return StrategySignal(name=self.name, category=self.category, reason=reason)
+        except Exception:
+            return None
+
+
+# ======================================================================================
+# MACD金叉底背离策略
+#
+# 核心逻辑（用户指定）：
+#   不要求今天必须是金叉日。找到最近两次金叉（T-1和T-2）：
+#   - T-2 的 DIF < T-1 的 DIF（MACD底部抬高 ↗）
+#   - T-2 的收盘价 > T-1 的收盘价（价格底部降低 ↘）
+#   → 价格创新低但DIF拒绝跟随 = 下跌动能衰竭 = 底背离反转信号
+#
+# 今天可以是金叉日当天，也可以是金叉后1~5天（给金叉确认留时间）。
+# ======================================================================================
+
+class MACDGoldenCrossDivergenceStrategy(BaseDailyStrategy):
+    """
+    MACD金叉底背离：最近两次金叉间 DIF 抬高但前N日最低价降低。
+
+    条件（全部满足才命中）：
+    1. 最近一次金叉在 1~8 天前（金叉已发生，今天是背离确认日）
+    2. 存在倒数第二次金叉（至少有过两次金叉）
+    3. 倒数第二次金叉 DIF < 最近一次金叉 DIF（且抬高幅度 ≥ 15%）
+    4. 倒数第二次金叉前5日最低 > 最近一次金叉前5日最低（价格底部降低）
+    5. 最近一次金叉 DIF < 0.3（零轴下方或刚上零轴，底部区域）
+    6. 今日 DIF > DEA（金叉后没有立刻死叉回去）
+    7. 当日涨幅 0.5%~9.5%（温和启动，不追涨停）
+    8. 成交量 > 20日均量 × 1.2（放量确认）
+    9. 阳线
+    """
+
+    name = "MACD金叉底背离"
+    category = "突破反转"
+    group = "底背离"
+
+    def match(self, row: pd.Series) -> bool:
+        fields = [
+            "收盘", "开盘", "涨跌幅", "成交量",
+            "DIF", "DEA",
+            "最近金叉DIF", "最近金叉前5日最低", "最近金叉距今天数",
+            "前次金叉DIF", "前次金叉前5日最低", "前次金叉距今天数",
+            "过去20日平均成交量",
+        ]
+        for c in fields:
+            if c not in row.index or pd.isna(row[c]):
+                return False
+
+        close      = float(row["收盘"])
+        open_      = float(row["开盘"])
+        pct        = float(row["涨跌幅"])
+        vol        = float(row["成交量"])
+        dif        = float(row["DIF"])
+        dea        = float(row["DEA"])
+        avg20      = float(row["过去20日平均成交量"])
+
+        # T-1：最近一次金叉（金叉2）
+        rec1_dif   = float(row["最近金叉DIF"])
+        rec1_low   = float(row["最近金叉前5日最低"])
+        rec1_days  = float(row["最近金叉距今天数"])
+
+        # T-2：倒数第二次金叉（金叉1）
+        rec2_dif   = float(row["前次金叉DIF"])
+        rec2_low   = float(row["前次金叉前5日最低"])
+        rec2_days  = float(row["前次金叉距今天数"])
+
+        # ① 最近一次金叉在 1~8 天前（金叉已发生，今天是背离确认日）
+        if rec1_days < 1 or rec1_days > 8:
+            return False
+
+        # ② 倒数第二次金叉存在，且两次金叉间隔合理（8~55天）
+        if rec2_days < 0:
+            return False
+        gap = rec2_days - rec1_days
+        if gap < 8 or gap > 55:
+            return False
+
+        # ③ DIF 底背离：T-1 DIF 比 T-2 DIF 至少抬高 15%
+        if rec2_dif == 0:
+            return False
+        dif_improve = (rec1_dif - rec2_dif) / abs(rec2_dif)
+        if dif_improve < 0.15:
+            return False
+
+        # ④ 价格底背离：T-2 前5日最低 > T-1 前5日最低（价格底部降低）
+        if rec2_low <= rec1_low:
+            return False
+
+        # ⑤ T-1 金叉的 DIF 在底部区域（零轴下方或刚上零轴）
+        if rec1_dif > 0.3:
+            return False
+
+        # ⑥ 今日 DIF > DEA（金叉结构未被破坏）
+        if dif <= dea:
+            return False
+
+        # ⑦ 温和启动：涨幅 0.5%~9.5%
+        if pct < 0.5 or pct >= 9.5:
+            return False
+
+        # ⑧ 放量确认：成交量 > 20日均量 × 1.2
+        if avg20 > 0 and vol < avg20 * 1.2:
+            return False
+
+        # ⑨ 阳线
+        if close <= open_:
+            return False
+
+        return True
+
+    def evaluate(self, row: pd.Series) -> StrategySignal | None:
+        if not self.enabled:
+            return None
+
+        try:
+            if self.match(row):
+                rec1_dif   = float(row["最近金叉DIF"])
+                rec1_low   = float(row["最近金叉前5日最低"])
+                rec1_days  = int(row["最近金叉距今天数"])
+                rec2_dif   = float(row["前次金叉DIF"])
+                rec2_low   = float(row["前次金叉前5日最低"])
+                rec2_days  = int(row["前次金叉距今天数"])
+
+                dif_rise   = rec1_dif - rec2_dif
+                price_fall = (rec1_low / rec2_low - 1) * 100
+
+                parts = [
+                    f"DIF抬高{dif_rise:+.3f}",
+                    f"价格降低{price_fall:+.1f}%",
+                    f"前次{rec2_days}天前→最近{rec1_days}天前",
+                ]
+                reason = "MACD金叉底背离: " + " | ".join(parts)
+                return StrategySignal(name=self.name, category=self.category, reason=reason)
+        except Exception:
+            return None
+
+        return None

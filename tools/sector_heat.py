@@ -29,7 +29,57 @@ from data_loader import disable_proxy, get_tushare_pro, get_latest_trade_date
 
 OUTPUT_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "output")
 SECTOR_JSON = "sector_heat.json"
+SECTOR_MEMBER_CACHE = os.path.join(OUTPUT_DIR, "sector_member_cache.json")
 WEEK_DAYS = 5
+
+
+def _load_member_cache() -> dict:
+    """加载板块成分股缓存 {ts_code: [con_code, ...]}"""
+    if os.path.exists(SECTOR_MEMBER_CACHE):
+        try:
+            with open(SECTOR_MEMBER_CACHE, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception:
+            pass
+    return {}
+
+
+def _save_member_cache(cache: dict):
+    """保存板块成分股缓存"""
+    os.makedirs(OUTPUT_DIR, exist_ok=True)
+    with open(SECTOR_MEMBER_CACHE, "w", encoding="utf-8") as f:
+        json.dump(cache, f, ensure_ascii=False)
+
+
+def fetch_sector_members(pro, ts_code: str, cache: dict) -> set:
+    """获取某板块的成分股代码集合（带缓存）"""
+    if ts_code in cache:
+        return set(cache[ts_code])
+    try:
+        df = pro.ths_member(ts_code=ts_code)
+    except Exception:
+        return set()
+    if df is None or df.empty:
+        return set()
+    codes = [str(c) for c in df["con_code"].tolist()]
+    cache[ts_code] = codes
+    return set(codes)
+
+
+def _match_sector_stocks(sectors: list, limit_stocks: list, pro, cache: dict) -> dict:
+    """将涨停股按板块匹配，返回 {sector_name: [stock_dict, ...]}"""
+    if not limit_stocks:
+        return {}
+    result = {}
+    for sec in sectors:
+        ts_code = sec.get("ts_code", "")
+        if not ts_code:
+            continue
+        members = fetch_sector_members(pro, ts_code, cache)
+        matched = [s for s in limit_stocks if s["ts_code"] in members]
+        if matched:
+            result[sec["name"]] = matched
+    return result
 
 
 def fetch_sectors(pro, trade_date: str) -> pd.DataFrame:
@@ -50,6 +100,18 @@ def fetch_sectors(pro, trade_date: str) -> pd.DataFrame:
     return df
 
 
+def fetch_limit_stocks(pro, trade_date: str) -> pd.DataFrame:
+    """调用 limit_list_d 获取当日涨停股票明细"""
+    try:
+        df = pro.limit_list_d(trade_date=trade_date, limit_type='U')
+    except Exception as e:
+        print(f"  ⚠️ 涨停股明细获取失败: {e}")
+        return pd.DataFrame()
+    if df is None or df.empty:
+        return pd.DataFrame()
+    return df
+
+
 def _sector_list(df: pd.DataFrame) -> list:
     """DataFrame 转为板块列表"""
     if df.empty:
@@ -67,6 +129,28 @@ def _sector_list(df: pd.DataFrame) -> list:
             "rank": int(r.get("rank", 0) or 0),
         })
     return sectors
+
+
+def _limit_stocks_list(df: pd.DataFrame) -> list:
+    """涨停股 DataFrame 转为列表"""
+    if df.empty:
+        return []
+    stocks = []
+    for _, r in df.iterrows():
+        stocks.append({
+            "ts_code": str(r.get("ts_code", "")),
+            "name": str(r.get("name", "")),
+            "industry": str(r.get("industry", "")),
+            "pct_chg": round(float(r.get("pct_chg", 0) or 0), 2),
+            "close": round(float(r.get("close", 0) or 0), 2),
+            "limit_times": int(r.get("limit_times", 0) or 0),
+            "up_stat": str(r.get("up_stat", "")),
+            "first_time": str(r.get("first_time", "")),
+            "amount": float(r.get("amount", 0) or 0),
+            "turnover_ratio": round(float(r.get("turnover_ratio", 0) or 0), 2),
+            "float_mv": round(float(r.get("float_mv", 0) or 0) / 1e8, 2),  # 转为亿
+        })
+    return stocks
 
 
 def build_summary(data_by_date: dict) -> list:
@@ -214,16 +298,26 @@ def main():
     # 拉数据
     data_by_date = {}
     console_df = None
+    member_cache = _load_member_cache()
 
     for td in target_dates:
         print(f"\n📡 {td} ...")
         df = fetch_sectors(pro, td)
+        df_stocks = fetch_limit_stocks(pro, td) if args.json else pd.DataFrame()
+        sectors_list = _sector_list(df)
+        limit_list = _limit_stocks_list(df_stocks)
+        sector_stocks = _match_sector_stocks(sectors_list, limit_list, pro, member_cache) if args.json and limit_list else {}
         if not df.empty:
-            console_df = df  # 取最新日期用于展示
+            console_df = df
+        for s in sectors_list:
+            s["limit_stocks"] = sector_stocks.get(s["name"], [])
         data_by_date[td] = {
             "total": len(df),
-            "sectors": _sector_list(df),
+            "sectors": sectors_list,
+            "limit_stocks": limit_list,
         }
+
+    _save_member_cache(member_cache)
 
     # 控制台展示
     if console_df is not None:

@@ -7,6 +7,8 @@ from .daily_strategies import (
     SecondWaveStrategy,
     SecondWaveAmbushStrategy,
     AnnualLineBreakStrategy,
+    WBottomStrategy,
+    MACDGoldenCrossDivergenceStrategy,
 )
 
 
@@ -22,6 +24,9 @@ def get_daily_strategies() -> list[BaseDailyStrategy]:
         # 趋势跟踪
         MainBullishMAAlignmentStrategy(),
 
+        # W双底（底部反转）
+        WBottomStrategy(),
+
         # 二波埋伏
         SecondWaveAmbushStrategy(),
 
@@ -31,6 +36,9 @@ def get_daily_strategies() -> list[BaseDailyStrategy]:
         # 突破
         MainBigYangPullbackNoBreakStrategy(),
         AnnualLineBreakStrategy(),
+
+        # 底背离
+        MACDGoldenCrossDivergenceStrategy(),
     ]
 
 

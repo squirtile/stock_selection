@@ -888,6 +888,15 @@ def run_daily(args=None):
         print("已关闭第二步信号扫描。")
         return
 
+    # ================================================================
+    # 指数数据更新（日线 + 分钟，cache/index/）
+    # ================================================================
+    try:
+        from index_data import update_index_cache
+        update_index_cache(days=365)
+    except Exception as e:
+        print(f"⚠️ 指数数据更新失败：{e}")
+
     print("\n开始执行第二步：信号策略扫描...")
 
     signal_df = scan_main_rising_stocks(
@@ -991,6 +1000,26 @@ def run_daily(args=None):
 
     print_signal_group_by_strategy("未涨停信号", not_limit_up_df, max_rows=50)
     print_signal_group_by_strategy("已涨停信号", limit_up_df, max_rows=50)
+
+    # ================================================================
+    # 分钟K线缓存更新（Baostock，免费无需权限）
+    # ================================================================
+    if getattr(args, "update_minute", False):
+        from minute_data import update_stock_minute_cache
+
+        minute_days = getattr(args, "minute_days", 365)
+        minute_max = getattr(args, "minute_update_stocks", 0) or 0
+
+        try:
+            update_stock_minute_cache(
+                stock_df=selected_df,
+                max_stocks=minute_max,
+                minute_days=minute_days,
+                frequencies=["5", "30", "60"],
+                include_1m=False,
+            )
+        except Exception as e:
+            print(f"⚠️ 分钟K线缓存更新失败：{e}")
 
     # 发送结果邮件（如果未禁用）
     if not getattr(args, "no_email", False):
@@ -1236,6 +1265,26 @@ def parse_args():
         "--no-email",
         action="store_true",
         help="跳过发送邮件（由外部脚本如 daily_report.py 统一发送时使用）。",
+    )
+
+    parser.add_argument(
+        "--update-minute",
+        action="store_true",
+        help="daily 模式下在日线扫描完成后，自动更新 5分钟/30分钟缓存（Tushare stk_mins）。",
+    )
+
+    parser.add_argument(
+        "--minute-days",
+        type=int,
+        default=365,
+        help="分钟缓存保留天数，默认365天。",
+    )
+
+    parser.add_argument(
+        "--minute-update-stocks",
+        type=int,
+        default=0,
+        help="分钟缓存更新最大股票数，0=全部。用于控制耗时，例如 200 表示只更新前200只。",
     )
 
     return parser.parse_args()

@@ -31,7 +31,7 @@ LADDER_JSON = "limit_up_ladder.json"
 
 
 def fetch_ladder(pro, trade_date: str) -> pd.DataFrame:
-    """调用 limit_step 获取连板数据（非交易日不重试）"""
+    """调用 limit_step + limit_list_d 获取连板+首板数据"""
     print(f"📡 获取连板数据（{trade_date}）...")
 
     try:
@@ -41,12 +41,40 @@ def fetch_ladder(pro, trade_date: str) -> pd.DataFrame:
         return pd.DataFrame()
 
     if df is None or df.empty:
-        print("⚠️ 当日无连板数据（可能非交易日或无连板股）")
-        return pd.DataFrame()
+        df = pd.DataFrame()
 
-    df["nums"] = pd.to_numeric(df["nums"], errors="coerce")
+    if not df.empty:
+        df["nums"] = pd.to_numeric(df["nums"], errors="coerce")
+        df = df.sort_values("nums", ascending=False).reset_index(drop=True)
+        print(f"   ✅ {len(df)} 只连板股（≥2板）")
+    else:
+        print("   ⚠️ 无连板股")
+
+    # 补充首板数据（limit_step 不含首板）
+    try:
+        df1 = pro.limit_list_d(trade_date=trade_date, limit_type='U')
+    except Exception:
+        df1 = pd.DataFrame()
+
+    if df1 is not None and not df1.empty:
+        # 只取 limit_times == 1 的首板股
+        df1["nums"] = pd.to_numeric(df1.get("limit_times", 0), errors="coerce").fillna(1).astype(int)
+        df1 = df1[df1["nums"] == 1].copy()
+        if not df1.empty:
+            # 统一列名
+            if "ts_code" in df1.columns and "name" in df1.columns:
+                df1 = df1[["ts_code", "name", "nums"]].copy()
+                df = pd.concat([df, df1], ignore_index=True) if not df.empty else df1
+                print(f"   ✅ {len(df1)} 只首板股")
+    else:
+        print("   ⚠️ 无首板数据")
+
+    if df.empty:
+        print("⚠️ 当日无涨停数据")
+        return df
+
     df = df.sort_values("nums", ascending=False).reset_index(drop=True)
-    print(f"   ✅ {len(df)} 只连板股")
+    print(f"   📊 合计 {len(df)} 只涨停股")
     return df
 
 
@@ -107,7 +135,7 @@ def _df_to_ladder(df: pd.DataFrame) -> dict:
 
     max_nums = int(df["nums"].max())
     ladder_groups = []
-    for n in range(max_nums, 1, -1):
+    for n in range(max_nums, 0, -1):
         group = df[df["nums"] == n]
         if group.empty:
             continue

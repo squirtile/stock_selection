@@ -30,12 +30,6 @@ from typing import Any
 import pandas as pd
 from flask import Flask, jsonify, request
 
-# ---------- 反向代理真实 IP 支持 ----------
-from werkzeug.middleware.proxy_fix import ProxyFix
-
-# Web 展示蓝本
-from web import web_bp
-
 # ------------------------------
 # 配置
 # ------------------------------
@@ -47,25 +41,6 @@ FALLBACK_FILE = "a_stock_selected.xlsx"
 MINI_PROGRAM_JSON = "mini_program_stocks.json"  # daily_report.py 生成的 JSON
 
 app = Flask(__name__)
-
-# ---- 反向代理：信任 X-Forwarded-For / X-Real-IP 头 ----
-# x_for=1 表示信任 1 层代理（如 nginx），更多层请调大
-app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1)
-
-# 注册 Web 展示蓝本（首页 HTML）
-app.register_blueprint(web_bp)
-
-
-# ---- 自定义访问日志（显示真实 IP） ----
-@app.before_request
-def log_request_info():
-    """每次请求前打印真实访问者 IP 和请求信息。"""
-    real_ip = request.remote_addr
-    # 也检查 X-Real-IP（部分代理用这个头）
-    x_real_ip = request.headers.get("X-Real-IP", "")
-    if x_real_ip:
-        real_ip = f"{real_ip} (X-Real-IP: {x_real_ip})"
-    print(f"[ACCESS] {real_ip} - {request.method} {request.path} - {request.headers.get('User-Agent', 'unknown')[:60]}")
 
 
 # ------------------------------
@@ -226,6 +201,72 @@ def _safe_float(val: Any) -> float | None:
 # ------------------------------
 # API 路由
 # ------------------------------
+
+@app.route("/", methods=["GET"])
+def index():
+    """首页"""
+    return """
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>📈 自用股票研究</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+               background: linear-gradient(135deg, #1a1a2e 0%, #16213e 50%, #0f3460 100%);
+               min-height: 100vh; display: flex; align-items: center; justify-content: center; }
+        .card { background: white; border-radius: 16px; padding: 40px; max-width: 600px;
+                box-shadow: 0 20px 60px rgba(0,0,0,0.3); }
+        h1 { color: #333; font-size: 26px; margin-bottom: 4px; }
+        .subtitle { color: #999; font-size: 14px; margin-bottom: 6px; }
+        .status { display: inline-block; background: #10b981; color: white; padding: 4px 12px;
+                  border-radius: 20px; font-size: 13px; margin-bottom: 24px; }
+        h2 { color: #555; font-size: 16px; margin-bottom: 16px; border-bottom: 2px solid #eee;
+             padding-bottom: 8px; }
+        .api-list { list-style: none; }
+        .api-list li { padding: 10px 0; border-bottom: 1px solid #f0f0f0; display: flex;
+                       align-items: center; gap: 10px; }
+        .method { font-weight: bold; font-size: 12px; padding: 2px 8px; border-radius: 4px;
+                  color: white; min-width: 42px; text-align: center; }
+        .method.get { background: #3b82f6; }
+        .method.post { background: #f59e0b; }
+        .api-list code { color: #6366f1; font-size: 14px; word-break: break-all; }
+        .api-list .desc { color: #888; font-size: 13px; margin-left: auto; white-space: nowrap; }
+        .disclaimer { margin-top: 24px; padding: 12px 16px; background: #fff3cd;
+                      border-radius: 8px; border-left: 4px solid #f59e0b; }
+        .disclaimer p { color: #856404; font-size: 13px; line-height: 1.6; margin: 0; }
+        .footer { margin-top: 16px; color: #ccc; font-size: 12px; text-align: center; }
+        @media (max-width: 480px) {
+            .card { padding: 24px; margin: 16px; }
+            .api-list .desc { display: none; }
+        }
+    </style>
+</head>
+<body>
+    <div class="card">
+        <h1>📈 自用股票研究</h1>
+        <p class="subtitle">看看走势、翻翻趋势，自己折腾着玩 👀</p>
+        <span class="status">● 运行中</span>
+        <h2>📡 数据接口</h2>
+        <ul class="api-list">
+            <li><span class="method get">GET</span> <code>/api/health</code> <span class="desc">健康检查</span></li>
+            <li><span class="method get">GET</span> <code>/api/stocks</code> <span class="desc">选股结果</span></li>
+            <li><span class="method post">POST</span> <code>/api/stocks/refresh</code> <span class="desc">触发扫描</span></li>
+            <li><span class="method get">GET</span> <code>/api/ladder</code> <span class="desc">连板天梯</span></li>
+            <li><span class="method get">GET</span> <code>/api/sector_heat</code> <span class="desc">板块热度</span></li>
+            <li><span class="method get">GET</span> <code>/api/moneyflow</code> <span class="desc">资金流向</span></li>
+            <li><span class="method get">GET</span> <code>/api/stock/&lt;code&gt;/kline</code> <span class="desc">个股K线</span></li>
+        </ul>
+        <div class="disclaimer">
+            <p>⚠️ 本站仅展示公开数据与个人研究记录，不构成投资建议。</p>
+        </div>
+        <div class="footer">byxzwz.top · 自己折腾着玩的 🚀</div>
+    </div>
+</body>
+</html>
+"""
 
 
 @app.route("/api/health", methods=["GET"])
@@ -462,7 +503,7 @@ def get_kline(code: str):
         # 转日期、排序、取最近30条
         df[date_col] = pd.to_datetime(df[date_col], errors="coerce")
         df = df.dropna(subset=[date_col])
-        df = df.sort_values(date_col).tail(60)
+        df = df.sort_values(date_col).tail(30)
 
         kline_data = []
         for _, row in df.iterrows():

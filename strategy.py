@@ -20,7 +20,7 @@ SIGNAL_OUTPUT_FILE = "output/a_stock_signal_selected.xlsx"
 VERBOSE_KLINE_LOG = False
 
 # 二次过滤条件
-MIN_AVG_AMOUNT_20D = 50_000_000      # 过去20天日均成交额 >= 5000万
+MIN_AVG_AMOUNT_20D = 1_000_000      # 过去20天日均成交额 >= 5000万
 LIMIT_UP_PCT = 9.95                  # 主板涨停判断：涨幅 >= 9.95%
 LIMIT_UP_WINDOW = 15                 # 过去15个交易日
 
@@ -850,6 +850,145 @@ def prepare_hist_data(df: pd.DataFrame) -> pd.DataFrame:
     df["缩量比5日"]       = pullback_vol_ratios
     df["缩量比10日"]      = pullback_vol_ratios
 
+    # =====================================================================
+    # W双底形态辅助字段
+    #
+    # 核心逻辑：
+    #   左底（~20~55天前最低）→ 反弹到颈线（两底之间最高）
+    #   → 右底（~3~18天前最低，缩量不破左底）→ 今日突破颈线 + 放量 = 买入信号
+    #
+    # 所需字段：
+    #   W_左底价格, W_左底日期偏移, W_颈线价格, W_右底价格, W_右底日期偏移,
+    #   W_双底价差比, W_颈线高度比, W_右底缩量比, W_突破颈线, W_放量突破
+    # =====================================================================
+    W_LEFT_BOT_START  = 20   # 左底搜索起始（天前）
+    W_LEFT_BOT_END    = 55   # 左底搜索结束（天前）
+    W_RIGHT_BOT_START = 3    # 右底搜索起始（天前，至少3天前）
+    W_RIGHT_BOT_END   = 18   # 右底搜索结束（天前）
+    W_NECK_MIN_REBOUND = 1.03  # 颈线至少比左底高8%
+    W_BOT_PRICE_RATIO  = 0.12  # 双底价差 ≤ 5%
+
+    close_w = df["收盘"].values
+    high_w  = df["最高"].values
+    low_w   = df["最低"].values
+    vol_w   = df["成交量"].values
+    n_w     = len(df)
+
+    w_left_bot_price   = np.full(n_w, np.nan)
+    w_left_bot_offset  = np.full(n_w, -1, dtype=int)
+    w_neck_price       = np.full(n_w, np.nan)
+    w_right_bot_price  = np.full(n_w, np.nan)
+    w_right_bot_offset = np.full(n_w, -1, dtype=int)
+    w_price_gap_ratio  = np.full(n_w, np.nan)   # 双底价差比
+    w_neck_height      = np.full(n_w, np.nan)   # 颈线/左底 - 1
+    w_right_vol_shrink = np.full(n_w, np.nan)   # 右底区均量/左底区均量
+    w_breakout         = np.full(n_w, False)    # 今日是否突破颈线
+    w_volume_confirm   = np.full(n_w, False)    # 今日是否放量确认
+
+    for i in range(n_w):
+        if i < W_LEFT_BOT_END + 5:
+            continue
+        if pd.isna(close_w[i]) or close_w[i] <= 0:
+            continue
+
+        # ---- 第一步：在 [20, 55] 天前找左底（最低价的最低点）----
+        left_start = max(0, i - W_LEFT_BOT_END)
+        left_end   = max(0, i - W_LEFT_BOT_START)
+        if left_end <= left_start + 5:
+            continue
+
+        left_low_slice = low_w[left_start:left_end]
+        valid_left = ~np.isnan(left_low_slice)
+        if valid_left.sum() < 5:
+            continue
+        left_bot_idx_rel = np.nanargmin(left_low_slice)
+        left_bot_idx = left_start + left_bot_idx_rel
+        left_bot_val = low_w[left_bot_idx]
+        if pd.isna(left_bot_val) or left_bot_val <= 0:
+            continue
+
+        # ---- 第二步：左底之后、今天之前找颈线（最高价），须在左底和右底之间 ----
+        neck_start = left_bot_idx + 3     # 左底后至少3天
+        neck_end   = max(0, i - W_RIGHT_BOT_START)  # 至少留3天给右底
+        if neck_end <= neck_start + 3:
+            continue
+
+        neck_high_slice = high_w[neck_start:neck_end]
+        valid_neck = ~np.isnan(neck_high_slice)
+        if valid_neck.sum() < 3:
+            continue
+        neck_idx_rel = np.nanargmax(neck_high_slice)
+        neck_idx = neck_start + neck_idx_rel
+        neck_val = high_w[neck_idx]
+        if pd.isna(neck_val) or neck_val <= 0:
+            continue
+
+        # 颈线必须比左底高至少8%
+        neck_rebound = neck_val / left_bot_val
+        if neck_rebound < W_NECK_MIN_REBOUND:
+            continue
+
+        # ---- 第三步：颈线之后找右底（最低价），至少3天前 ----
+        right_start = neck_idx + 2
+        right_end   = max(0, i - W_RIGHT_BOT_START)
+        if right_end <= right_start + 2:
+            continue
+
+        right_low_slice = low_w[right_start:right_end]
+        valid_right = ~np.isnan(right_low_slice)
+        if valid_right.sum() < 2:
+            continue
+        right_bot_idx_rel = np.nanargmin(right_low_slice)
+        right_bot_idx = right_start + right_bot_idx_rel
+        right_bot_val = low_w[right_bot_idx]
+        if pd.isna(right_bot_val) or right_bot_val <= 0:
+            continue
+
+        # ---- 第四步：双底价差比 ≤ 5%（右底≈左底）----
+        gap_ratio = abs(right_bot_val / left_bot_val - 1)
+        if gap_ratio > W_BOT_PRICE_RATIO:
+            continue
+
+        # ---- 第五步：右底成交缩量（右底附近均量 < 左底附近均量）----
+        left_vol_slice = vol_w[max(0, left_bot_idx - 3):left_bot_idx + 4]
+        right_vol_slice = vol_w[max(0, right_bot_idx - 3):right_bot_idx + 4]
+        left_vol_avg = np.nanmean(left_vol_slice) if len(left_vol_slice) > 0 else np.nan
+        right_vol_avg = np.nanmean(right_vol_slice) if len(right_vol_slice) > 0 else np.nan
+        vol_shrink = right_vol_avg / left_vol_avg if (not np.isnan(left_vol_avg) and left_vol_avg > 0) else np.nan
+
+        # ---- 第六步：今日突破颈线 + 放量确认 ----
+        today_breakout = close_w[i] > neck_val
+        avg_vol20_val = df["过去20日平均成交量"].values[i] if "过去20日平均成交量" in df.columns else np.nan
+        today_volume_ok = (
+            today_breakout
+            and not np.isnan(avg_vol20_val)
+            and avg_vol20_val > 0
+            and vol_w[i] > avg_vol20_val * 1.3
+        )
+
+        # ---- 存储 ----
+        w_left_bot_price[i]   = left_bot_val
+        w_left_bot_offset[i]  = i - left_bot_idx
+        w_neck_price[i]       = neck_val
+        w_right_bot_price[i]  = right_bot_val
+        w_right_bot_offset[i] = i - right_bot_idx
+        w_price_gap_ratio[i]  = gap_ratio
+        w_neck_height[i]      = neck_rebound - 1
+        w_right_vol_shrink[i] = vol_shrink
+        w_breakout[i]         = today_breakout
+        w_volume_confirm[i]   = today_volume_ok
+
+    df["W_左底价格"]     = w_left_bot_price
+    df["W_左底距今天数"] = w_left_bot_offset
+    df["W_颈线价格"]     = w_neck_price
+    df["W_右底价格"]     = w_right_bot_price
+    df["W_右底距今天数"] = w_right_bot_offset
+    df["W_双底价差比"]   = w_price_gap_ratio     # ≤0.05 = 双底确认
+    df["W_颈线高度比"]   = w_neck_height         # ≥0.08 = 颈线有效
+    df["W_右底缩量比"]   = w_right_vol_shrink    # <1.0 = 右底更缩量
+    df["W_突破颈线"]     = w_breakout
+    df["W_放量突破"]     = w_volume_confirm
+
     # ---- 均线趋势 ----
     df["MA5_3日前"] = df["SMA5"].shift(3)
     df["MA5趋势"] = df["SMA5"] - df["MA5_3日前"]  # >0 = 上翘
@@ -876,6 +1015,62 @@ def prepare_hist_data(df: pd.DataFrame) -> pd.DataFrame:
         (df["近20日最低收盘"] <= df["前20日最低收盘"] * 1.02)
         & (df["近20日最低DIF"] > df["前20日最低DIF"])
     )
+
+    # ---- MACD金叉底背离：每行记录最近2次金叉的DIF和金叉前N日最低价 ----
+    # 核心思路：对于每个交易日，往前找最近两次金叉，比较它们的背离关系。
+    # T-1 = 最近一次金叉, T-2 = T-1之前的金叉
+    # 价格比较不用金叉当天收盘价，而用金叉前N天的最低价（更能反映真正的底部）
+    # 条件：T-2 DIF < T-1 DIF（MACD底部抬高）且 T-2 前N日最低 > T-1 前N日最低（价格底部降低）
+    GC_LOW_LOOKBACK = 5  # 金叉前N天取最低价
+
+    n = len(df)
+    golden_cross = df["DIF金叉"].values
+    dif_vals = df["DIF"].values
+    low_vals = df["最低"].values   # 当日最低价，不是收盘价
+
+    # 收集所有金叉的位置和数值
+    golden_ilocs = [i for i in range(n) if golden_cross[i]]
+
+    # 计算每个金叉的前N日最低价（取每日最低价的最小值，不含金叉当天）
+    golden_low = {}  # iloc -> 前N日最低价
+    for gi in golden_ilocs:
+        start = max(0, gi - GC_LOW_LOOKBACK)
+        end = gi  # 不含金叉当天
+        if start < end:
+            golden_low[gi] = float(np.min(low_vals[start:end]))
+        else:
+            golden_low[gi] = low_vals[gi]  # 兜底：数据不足时用金叉当天最低价
+
+    # 对每个交易日，找最近2次金叉
+    rec1_dif = [np.nan] * n      # 最近一次金叉的DIF
+    rec1_low = [np.nan] * n      # 最近一次金叉前N日最低价
+    rec1_days = [np.nan] * n     # 距今天数
+    rec2_dif = [np.nan] * n      # 倒数第二次金叉的DIF
+    rec2_low = [np.nan] * n      # 倒数第二次金叉前N日最低价
+    rec2_days = [np.nan] * n     # 距今天数
+
+    if len(golden_ilocs) >= 2:
+        g_ptr = 0
+        for i in range(n):
+            while g_ptr < len(golden_ilocs) and golden_ilocs[g_ptr] <= i:
+                g_ptr += 1
+            if g_ptr >= 1:
+                r1 = golden_ilocs[g_ptr - 1]
+                rec1_dif[i] = dif_vals[r1]
+                rec1_low[i] = golden_low.get(r1, low_vals[r1])
+                rec1_days[i] = i - r1
+            if g_ptr >= 2:
+                r2 = golden_ilocs[g_ptr - 2]
+                rec2_dif[i] = dif_vals[r2]
+                rec2_low[i] = golden_low.get(r2, low_vals[r2])
+                rec2_days[i] = i - r2
+
+    df["最近金叉DIF"] = rec1_dif
+    df["最近金叉前5日最低"] = rec1_low
+    df["最近金叉距今天数"] = rec1_days
+    df["前次金叉DIF"] = rec2_dif
+    df["前次金叉前5日最低"] = rec2_low
+    df["前次金叉距今天数"] = rec2_days
 
     # ---- 前期平台支撑：40~60天前的20日均价作为平台参考 ----
     df["远期均价"] = df["收盘"].shift(40).rolling(20).mean()

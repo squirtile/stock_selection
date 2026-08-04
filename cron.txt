@@ -1,5 +1,9 @@
+# ── 股票选股 ──
 # 每个交易日 19:00 执行每日选股报告（收盘后，Tushare数据已就绪）
-# 编辑方式：crontab -e
-# 查看日志：tail -f /var/log/stock_daily.log
+# --update-minute: 日线扫描后自动更新 5分钟/30分钟K线缓存
+# --minute-max-stocks 200: 只更新前200只（首次全量后，增量很快；全量1156只约需29分钟）
+0 19 * * 1-5 cd /home/ubuntu/code/stock/stock_selection && /usr/bin/python3 daily_report.py --force-update --update-minute --minute-max-stocks 200 --no-email >> /var/log/stock_daily.log 2>&1
 
-0 19 * * 1-5 cd /home/ubuntu/code/stock/stock_selection && /usr/bin/python3 daily_report.py --force-update --no-email >> /var/log/stock_daily.log 2>&1
+# ── 福彩推荐 ──
+# 每天早上 4:00 执行福彩3D + 双色球统一推荐
+0 4 * * * cd /home/ubuntu/code/stock/stock_selection && /usr/bin/python3 fc/daily_unified.py >> /var/log/fc_daily.log 2>&1

@@ -17,7 +17,9 @@ import time  # 用来计时
 from config import TUSHARE_TOKEN, TUSHARE_HTTP_URL
 
 ts.set_token(TUSHARE_TOKEN)
-pro = ts.pro_api(TUSHARE_HTTP_URL)
+pro = ts.pro_api(TUSHARE_TOKEN)
+if TUSHARE_HTTP_URL:
+    pro._DataApi__http_url = TUSHARE_HTTP_URL
 
 # -----------------------
 # 2. 获取测试股票列表

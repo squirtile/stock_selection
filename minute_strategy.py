@@ -677,12 +677,14 @@ def calibrate_minute_cache_after_market(
     minute_days: int = DEFAULT_MINUTE_DAYS,
     max_workers: int = 4,
     include_1m: bool = False,
+    include_60m: bool = False,
 ) -> pd.DataFrame:
     """
     盘后分钟缓存校准入口。
 
-    默认校准 1m / 5m / 30m。
-    include_1m 参数保留兼容旧调用，但当前盘后校准默认已经包含 1m。
+    默认校准 5m / 30m / 60m。
+    include_1m=True 时追加 1m。
+    include_60m 参数保留兼容旧调用，当前已默认包含 60m。
     """
     if stock_df is None or stock_df.empty:
         print("盘后分钟校准：股票池为空，跳过。")
@@ -694,8 +696,10 @@ def calibrate_minute_cache_after_market(
     if max_stocks and max_stocks > 0:
         df = df.head(max_stocks).copy()
 
-    # 盘后校准默认直接更新 1m / 5m / 30m，不再需要额外开关。
-    frequencies = ["1", "5", "30"]
+    # 盘后校准默认更新 5m / 30m / 60m，通过 include_1m 按需追加 1m。
+    frequencies = ["5", "30", "60"]
+    if include_1m:
+        frequencies.append("1")
 
     total = len(df)
     max_workers = max(1, int(max_workers or 1))
