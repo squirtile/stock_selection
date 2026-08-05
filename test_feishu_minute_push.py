@@ -5,7 +5,9 @@
 
 import pandas as pd
 
-from minute_strategy import push_minute_buy_points_to_feishu
+# minute_strategy 已移除，飞书分钟推送功能不再可用
+raise ImportError("minute_strategy 已移除，分钟B点推送功能已废弃")
+
 
 
 def main():

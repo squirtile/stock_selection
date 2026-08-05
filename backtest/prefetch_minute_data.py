@@ -17,7 +17,10 @@ PROJECT_ROOT = os.path.dirname(CURRENT_DIR)
 if PROJECT_ROOT not in sys.path:
     sys.path.insert(0, PROJECT_ROOT)
 
-from minute_strategy import get_minute_data_baostock
+# minute_strategy 已移除，分钟数据预下载功能不再可用
+# 请使用 minute_data.py 的 update_stock_minute_cache 替代
+raise ImportError("minute_strategy 已移除，请使用 minute_data.py 替代")
+
 
 
 BASE_POOL_FILE = os.path.join(PROJECT_ROOT, "output", "a_stock_selected.xlsx")

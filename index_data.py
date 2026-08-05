@@ -45,7 +45,7 @@ from data_sources.base import MINUTE_COLUMNS, DAILY_COLUMNS
 INDEX_CACHE_DIR = "cache/index"
 INDEX_DAILY_DIR = os.path.join(INDEX_CACHE_DIR, "daily")
 INDEX_MINUTE_DIR = os.path.join(INDEX_CACHE_DIR, "minute")
-DEFAULT_INDEX_DAYS = 365
+DEFAULT_INDEX_DAYS = 60
 INDEX_MINUTE_FREQS = ["5", "30", "60"]
 
 

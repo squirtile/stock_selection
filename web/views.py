@@ -71,4 +71,5 @@ def index():
         allTabs=all_tabs,
         stocks=data["stocks"],
         marketContext=data["marketContext"],
+        indexDivergence=data["marketContext"].get("indexDivergence", {}) if data.get("marketContext") else {},
     )

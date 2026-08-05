@@ -888,15 +888,6 @@ def run_daily(args=None):
         print("已关闭第二步信号扫描。")
         return
 
-    # ================================================================
-    # 指数数据更新（日线 + 分钟，cache/index/）
-    # ================================================================
-    try:
-        from index_data import update_index_cache
-        update_index_cache(days=365)
-    except Exception as e:
-        print(f"⚠️ 指数数据更新失败：{e}")
-
     print("\n开始执行第二步：信号策略扫描...")
 
     signal_df = scan_main_rising_stocks(
@@ -905,6 +896,7 @@ def run_daily(args=None):
         force_update=bool(getattr(args, "force_update_daily", False)),
         workers=getattr(args, "workers", 1),
         update_workers=getattr(args, "update_workers", 1),
+        skip_update=bool(getattr(args, "daily_cache_only", False)),
     )
 
     if signal_df is None or signal_df.empty:
@@ -1015,7 +1007,7 @@ def run_daily(args=None):
                 stock_df=selected_df,
                 max_stocks=minute_max,
                 minute_days=minute_days,
-                frequencies=["5", "30", "60"],
+                frequencies=["30", "60"],
                 include_1m=False,
             )
         except Exception as e:
@@ -1286,7 +1278,6 @@ def parse_args():
         default=0,
         help="分钟缓存更新最大股票数，0=全部。用于控制耗时，例如 200 表示只更新前200只。",
     )
-
     return parser.parse_args()
 
 

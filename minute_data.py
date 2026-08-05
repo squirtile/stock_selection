@@ -35,11 +35,11 @@ from data_sources import get_minute_source, MinuteDataSource
 from data_sources.base import MINUTE_COLUMNS
 
 STOCK_MINUTE_DIR = "cache/minute"
-DEFAULT_FREQUENCIES = ["5", "30", "60"]
-DEFAULT_MINUTE_DAYS = 365
+DEFAULT_FREQUENCIES = ["30", "60"]  # 缠论/背离只用 30m 和 60m，5m 已废弃
+DEFAULT_MINUTE_DAYS = 60
 
-# BaoStock 单线程即可（免费不限制），Tushare 可用多线程但有限速
-WORKERS = 1 if MINUTE_DATA_SOURCE == "baostock" else 2
+# BaoStock/Tushare 都用单线程 + 延时，避免连接冲突和限流
+WORKERS = 1
 
 
 def _load_existing_cache(cache_file: str, days: int) -> pd.DataFrame:
@@ -84,8 +84,10 @@ def fetch_one_stock_minute(
     if not old_df.empty:
         latest_dt = old_df["datetime"].max()
         now = datetime.now()
-        # 当天 14:55 之后且缓存已覆盖到今天14:55，认为已是最新
         close_cutoff = datetime.strptime("14:55", "%H:%M").time()
+        market_open = datetime.strptime("09:30", "%H:%M").time()
+
+        # 情况1: 当天收盘后 → 缓存已覆盖到今天14:55，跳过
         if latest_dt.date() == now.date() and latest_dt.time() >= close_cutoff:
             return {
                 "success": True, "code": code, "frequency": frequency,
@@ -94,11 +96,50 @@ def fetch_one_stock_minute(
                 "cache_file": cache_file, "error": "",
             }
 
+        # 情况2: 盘前/盘中（今天还未收盘），缓存是昨天的 → 跳过
+        if now.time() < close_cutoff and (now.date() - latest_dt.date()).days <= 1:
+            return {
+                "success": True, "code": code, "frequency": frequency,
+                "rows": len(old_df), "new_rows": 0,
+                "update_mode": "skip_premarket", "latest_dt": latest_dt,
+                "cache_file": cache_file, "error": "",
+            }
+
     try:
-        start_date = (datetime.now() - timedelta(days=days)).strftime("%Y-%m-%d")
+        # 增量更新：如果已有缓存，只拉最新日期之后的数据
+        if not old_df.empty:
+            last_dt = old_df["datetime"].max()
+            start_date = (last_dt + timedelta(days=1)).strftime("%Y-%m-%d")
+        else:
+            start_date = (datetime.now() - timedelta(days=days)).strftime("%Y-%m-%d")
         end_date = datetime.now().strftime("%Y-%m-%d")
 
-        df_new = source.fetch_stock_minute(code, frequency, start_date, end_date)
+        # 根据 stk_mins 单次 8000 行限制，自动分片（留 10% 余量）
+        _BARS_PER_DAY = {"1": 240, "5": 48, "15": 16, "30": 8, "60": 4}
+        _SAFE_ROWS = 7200  # 8000 × 0.9
+        bars = _BARS_PER_DAY.get(frequency, 48)
+        chunk_days = max(1, _SAFE_ROWS // bars)
+
+        # 计算实际需要拉取的天数（增量更新可能只需1天）
+        actual_start = datetime.strptime(start_date, "%Y-%m-%d")
+        actual_days = (datetime.now() - actual_start).days + 1
+
+        if actual_days > chunk_days:
+            df_new_list = []
+            chunk_start = actual_start
+            while chunk_start < datetime.now():
+                chunk_end = min(chunk_start + timedelta(days=chunk_days), datetime.now())
+                s = chunk_start.strftime("%Y-%m-%d")
+                e = chunk_end.strftime("%Y-%m-%d")
+                chunk_df = source.fetch_stock_minute(code, frequency, s, e)
+                if chunk_df is not None and not chunk_df.empty:
+                    df_new_list.append(chunk_df)
+                chunk_start = chunk_end
+                if chunk_start < datetime.now() and MINUTE_DATA_SOURCE == "tushare":
+                    time.sleep(0.3)
+            df_new = pd.concat(df_new_list, ignore_index=True) if df_new_list else pd.DataFrame()
+        else:
+            df_new = source.fetch_stock_minute(code, frequency, start_date, end_date)
 
         if df_new is None or df_new.empty:
             if not old_df.empty:
@@ -212,13 +253,19 @@ def update_stock_minute_cache(
     def _update_one(code: str):
         nonlocal success_count, failed_count
         details = []
-        for freq in frequencies:
+        for fi, freq in enumerate(frequencies):
+            # Tushare 需要延时避免限流，BaoStock 不需要
+            if fi > 0 and MINUTE_DATA_SOURCE == "tushare":
+                time.sleep(0.3)
             r = fetch_one_stock_minute(source, code, freq, minute_days)
             details.append(r)
             if r["success"]:
                 success_count += 1
             else:
                 failed_count += 1
+
+        # 收集失败详情
+        failed_details = [d for d in details if not d["success"]]
 
         with lock:
             finished[0] += 1
@@ -228,9 +275,21 @@ def update_stock_minute_cache(
             print(
                 f"  进度: {i}/{total} | {code} | "
                 f"成功: {success_count} | 失败: {failed_count} | "
-                f"剩余: {remain/60:.1f}min",
+                f"剩余: {remain/60:.1f}min" + " " * 20,
                 end="\r", flush=True,
             )
+
+        # 即时打印失败信息
+        if failed_details:
+            lines = []
+            for fd in failed_details:
+                freq_label = f"{fd.get('frequency', '')}m"
+                err = fd.get("error", "未知错误")
+                lines.append(f"  ❌ {code} {freq_label}: {err}")
+            # 先换行再打印，避免覆盖进度条
+            print()
+            for line in lines:
+                print(line)
 
         for detail in details:
             result_rows.append({
@@ -246,18 +305,78 @@ def update_stock_minute_cache(
             })
 
     if workers == 1:
-        for code in codes:
+        for ci, code in enumerate(codes):
+            if ci > 0 and MINUTE_DATA_SOURCE == "tushare":
+                time.sleep(0.2)  # Tushare 需要股票间延时
             _update_one(code)
     else:
         with ThreadPoolExecutor(max_workers=workers) as executor:
             list(executor.map(_update_one, codes))
 
     print()
+
+    # ================================================================
+    # 第一轮结束后，重试所有失败的 (代码, 周期) 组合
+    # ================================================================
+    failed_pairs = [
+        (r["代码"], r["周期"].replace("m", ""))
+        for r in result_rows
+        if not r["是否成功"]
+    ]
+
+    if failed_pairs:
+        print(f"\n🔄 第一轮失败 {len(failed_pairs)} 条，开始重试...")
+        retry_success = 0
+        retry_fail = 0
+
+        for ri, (code, freq) in enumerate(failed_pairs):
+            if ri > 0 and MINUTE_DATA_SOURCE == "tushare":
+                time.sleep(0.5)  # Tushare 重试间隔
+            r = fetch_one_stock_minute(source, code, freq, minute_days)
+            # 更新 result_rows 中对应的记录
+            for i, row in enumerate(result_rows):
+                if row["代码"] == code and row["周期"] == f"{freq}m":
+                    result_rows[i] = {
+                        "代码": r.get("code", code),
+                        "周期": f"{r.get('frequency', '')}m",
+                        "是否成功": r.get("success"),
+                        "数据行数": r.get("rows", 0) or 0,
+                        "新增行数": r.get("new_rows", 0) or 0,
+                        "更新方式": r.get("update_mode", ""),
+                        "最新时间": str(r.get("latest_dt", "")) if r.get("latest_dt") is not None else "",
+                        "缓存文件": r.get("cache_file", ""),
+                        "错误信息": r.get("error", ""),
+                    }
+                    break
+
+            if r["success"]:
+                retry_success += 1
+                print(f"  ✅ 重试成功: {code} {freq}m")
+            else:
+                retry_fail += 1
+                print(f"  ❌ 重试仍失败: {code} {freq}m | {r.get('error', '?')}")
+
+        # 更新计数
+        success_count += retry_success
+        failed_count = failed_count - retry_success + retry_fail
+        print(f"  重试结果: 成功 {retry_success}, 仍失败 {retry_fail}")
+
     elapsed = time.time() - start_time
     result_df = pd.DataFrame(result_rows)
 
     print(f"✅ 个股分钟数据更新完成，耗时 {elapsed/60:.1f} 分钟")
     print(f"   成功: {success_count} 周期 | 失败: {failed_count} 周期")
+
+    # 打印失败汇总
+    if not result_df.empty:
+        failed_df = result_df[result_df["是否成功"] == False]
+        if not failed_df.empty:
+            print(f"\n{'='*70}")
+            print(f"⚠️ 失败明细 ({len(failed_df)} 条):")
+            print(f"{'='*70}")
+            for _, row in failed_df.iterrows():
+                print(f"  {row['代码']} {row['周期']}: {row['错误信息']}")
+
     return result_df
 
 

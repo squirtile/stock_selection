@@ -49,12 +49,10 @@ from strategy import (
     check_secondary_filters,
 )
 
-from minute_strategy import (
-    get_minute_data_baostock,
-    prepare_minute_data,
-    evaluate_minute_buy_point,
-    build_daily_group,
-)
+# minute_strategy 已移除，分钟回测功能不再可用
+# 如需分钟级回测，请使用 strategies/minute_divergence.py
+raise ImportError("minute_strategy 已移除，请使用 strategies/minute_divergence.py 替代")
+
 
 import baostock as bs
 

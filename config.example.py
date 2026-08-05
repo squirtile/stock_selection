@@ -16,11 +16,30 @@ TUSHARE_TOKEN = os.getenv("TUSHARE_TOKEN", "你的Tushare_Token")
 # Tushare 代理地址（如有）
 TUSHARE_HTTP_URL = os.getenv("TUSHARE_HTTP_URL", "http://8.136.22.187:8011/")
 
+# =========================
+# 数据源切换配置
+# =========================
+# 个股分钟数据源: "baostock" | "tushare"
+#   baostock: 免费, 无需token, 支持5/15/30/60分钟
+#   tushare: 需token + stk_mins权限, 支持1/5/15/30/60分钟
+MINUTE_DATA_SOURCE = os.getenv("MINUTE_DATA_SOURCE", "baostock")
+
+# 指数数据源: "baostock" | "tushare"
+#   baostock: 免费, 支持指数日线, 不支持指数分钟线
+#   tushare: 需token + idx_mins权限, 支持指数日线+分钟线
+INDEX_DATA_SOURCE = os.getenv("INDEX_DATA_SOURCE", "baostock")
+
+# 日线数据源: "baostock" | "tushare"
+DATA_SOURCE = os.getenv("DATA_SOURCE", "baostock")
+
 # 飞书 Webhook（可选）
 FEISHU_WEBHOOK_URL = "https://open.feishu.cn/open-apis/bot/v2/hook/你的飞书webhook"
 
 # 可选：是否开启分钟B点飞书推送
 FEISHU_MINUTE_PUSH_ENABLE = True
+
+# 飞书每日报告 Webhook（可选）
+FEISHU_DAILY_REPORT_URL = os.getenv("FEISHU_DAILY_REPORT_URL", "")
 
 # =========================
 # 基础股票池筛选条件

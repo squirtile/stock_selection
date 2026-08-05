@@ -27,7 +27,8 @@ from strategy import (
     evaluate_latest_signal,
 )
 
-from minute_strategy import scan_minute_buy_points
+# minute_strategy 已移除，分钟B点确认功能不再使用
+# 如需要分钟级确认，请使用 strategies/minute_divergence.py 和 strategies/chanlun/
 
 
 BASE_POOL_FILE = "output/a_stock_selected.xlsx"
@@ -790,10 +791,9 @@ def scan_realtime_once(
     minute_df = pd.DataFrame()
     if enable_minute:
         step_start_time = time.time()
-        minute_df = scan_minute_buy_points(
-            export_df,
-            max_stocks=minute_max_stocks,
-        )
+        # minute_strategy 已移除，分钟B点确认已废弃
+        print("[用时] 9. 分钟级B点扫描：功能已移除，使用 strategies/ 下模块替代")
+        minute_df = pd.DataFrame()
         print_step_elapsed("9. 分钟级B点扫描", step_start_time)
     else:
         print("[用时] 9. 分钟级B点扫描：已关闭")

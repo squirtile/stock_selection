@@ -90,7 +90,7 @@ def apply_filters(df: pd.DataFrame) -> pd.DataFrame:
     # 2. 排除 ST
     df = remove_st(df)
 
-    # 3. 市值 100-1500 亿
+    # 3. 市值筛选（范围见 config.py）
     df = filter_market_value(df)
 
     # 4. 价格小于 100 元

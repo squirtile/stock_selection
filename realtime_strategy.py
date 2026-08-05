@@ -27,7 +27,8 @@ from strategy import (
     evaluate_latest_signal,
 )
 
-from minute_strategy import scan_minute_buy_points, calibrate_minute_cache_after_market
+# minute_strategy 已移除，分钟B点确认功能不再使用
+# 如需要分钟级确认，请使用 strategies/minute_divergence.py 和 strategies/chanlun/
 
 
 BASE_POOL_FILE = "output/a_stock_selected.xlsx"
@@ -794,14 +795,10 @@ def scan_realtime_once(
     minute_df = pd.DataFrame()
     if enable_minute:
         step_start_time = time.time()
-        minute_df = scan_minute_buy_points(
-            export_df,
-            max_stocks=minute_max_stocks,
-            minute_days=minute_days,
-            max_workers=max_workers,
-            enable_1m_buy=enable_1m_buy,
-            force_update_minute=force_update_minute,
-        )
+        # minute_strategy 已移除，分钟B点确认已废弃
+        # 请使用 strategies/minute_divergence.py 和 strategies/chanlun/ 替代
+        print("[用时] 9. 分钟级B点扫描：功能已移除，使用 strategies/ 下模块替代")
+        minute_df = pd.DataFrame()
         print_step_elapsed("9. 分钟级B点扫描", step_start_time)
     else:
         print("[用时] 9. 分钟级B点扫描：已关闭")
@@ -921,14 +918,9 @@ def main():
     args = parser.parse_args()
 
     if args.after_market_calibrate:
-        pool_df = load_base_pool(BASE_POOL_FILE)
-        calibrate_minute_cache_after_market(
-            pool_df,
-            max_stocks=args.max_stocks,
-            minute_days=args.minute_days,
-            max_workers=args.max_workers,
-            include_1m=args.enable_1m_buy,
-        )
+        # minute_strategy 已移除，盘后分钟校准已废弃
+        # 请使用 python test_minute_fetch.py --all 或 minute_data.py 替代
+        print("❌ --after-market-calibrate 已废弃，请使用 python test_minute_fetch.py --all")
         return
 
     if args.loop:

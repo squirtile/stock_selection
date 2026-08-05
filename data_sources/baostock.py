@@ -177,11 +177,11 @@ class BaoStockIndexSource(IndexDataSource):
 
         rs = bs.query_history_k_data_plus(
             bs_code,
-            "date,open,high,low,close,volume,amount",
+            "date,open,high,low,close,volume,amount,pctChg",
             start_date=start_date,
             end_date=end_date,
             frequency="d",
-            adjustflag="1",
+            adjustflag="3",  # 指数不复权
         )
 
         if rs.error_code != "0":
@@ -191,25 +191,20 @@ class BaoStockIndexSource(IndexDataSource):
         if data.empty:
             return pd.DataFrame()
 
-        for col in ["open", "high", "low", "close", "volume", "amount"]:
-            data[col] = pd.to_numeric(data[col], errors="coerce")
-
-        # 计算涨跌幅
-        data["close"] = pd.to_numeric(data["close"], errors="coerce")
-        data["pre_close"] = data["close"].shift(1)
-        data["pct_chg"] = ((data["close"] - data["pre_close"]) / data["pre_close"] * 100).round(4)
-        data["pct_chg"] = data["pct_chg"].fillna(0.0)
+        for col in ["open", "high", "low", "close", "volume", "amount", "pctChg"]:
+            if col in data.columns:
+                data[col] = pd.to_numeric(data[col], errors="coerce")
 
         result = pd.DataFrame({
             "date": pd.to_datetime(data["date"], errors="coerce"),
             "code": index_key,
-            "open": data["open"],
-            "high": data["high"],
-            "low": data["low"],
-            "close": data["close"],
-            "volume": data["volume"],
-            "amount": data["amount"],
-            "pct_chg": data["pct_chg"],
+            "open": data.get("open"),
+            "high": data.get("high"),
+            "low": data.get("low"),
+            "close": data.get("close"),
+            "volume": data.get("volume"),
+            "amount": data.get("amount"),
+            "pct_chg": data.get("pctChg", 0.0),
         })
 
         result = result.dropna(subset=["date"]).sort_values("date").reset_index(drop=True)

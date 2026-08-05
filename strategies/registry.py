@@ -80,10 +80,9 @@ from .minute_strategies import (
     OneMinuteBuyStrategy,
     check_30m_structure,
 )
-from .chanlun_strategies import (
-    # ChanlunFirstBuyMinuteStrategy,
-    ChanlunSecondBuyMinuteStrategy,
-    ChanlunThirdBuyMinuteStrategy,
+from .minute_divergence import (
+    MinuteDIFDivergenceStrategy,
+    MinuteGoldenCrossDivergenceStrategy,
 )
 
 
@@ -91,22 +90,25 @@ def get_minute_strategies() -> list[BaseMinuteStrategy]:
     """
     分钟B点策略注册表。
 
-    现在执行顺序是：
+    执行顺序：
     1. 30分钟趋势过滤：evaluate_minute_strategies() 里统一执行；
-    2. 5分钟结构策略 + 缠论买点：先确认结构；
-    3. 1分钟精确买点：最后确认入场。
+    2. 30分钟底背离确认：DIF底背离 / MACD金叉底背离；
+    3. 5分钟结构策略：回踩/突破/反包；
+    4. 1分钟精确买点：最后确认入场。
+
+    注意：缠论买点已迁移到独立的 strategies/chanlun/ 模块，
+    使用 strategies.chanlun.detect_all_buy_points() 调用。
     """
 
     return [
+        # 30分钟底背离（先做宏观背离确认）
+        MinuteDIFDivergenceStrategy(),
+        MinuteGoldenCrossDivergenceStrategy(),
+
         # 5分钟结构类B点
         PullbackStartMinuteStrategy(),
         PlatformBreakoutMinuteStrategy(),
         VolumeReversalMinuteStrategy(),
-
-        # 5分钟缠论类B点
-        # ChanlunFirstBuyMinuteStrategy(),
-        ChanlunSecondBuyMinuteStrategy(),
-        ChanlunThirdBuyMinuteStrategy(),
 
         # 1分钟精确入场确认
         OneMinuteBuyStrategy(),

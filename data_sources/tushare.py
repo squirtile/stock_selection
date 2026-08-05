@@ -30,7 +30,7 @@ def _get_pro():
 def _ts_code(code: str) -> str:
     """6位代码 → Tushare ts_code。"""
     code = str(code).zfill(6)
-    if code.startswith(("600", "601", "603", "605", "688")):
+    if code.startswith(("600", "601", "603", "605", "688", "689")):
         return f"{code}.SH"
     return f"{code}.SZ"
 
@@ -70,9 +70,46 @@ class TushareMinuteSource(MinuteDataSource):
         if df is None or df.empty:
             return pd.DataFrame()
 
-        # 复用现有 normalize 逻辑
-        from minute_strategy import normalize_stk_mins_df
-        return normalize_stk_mins_df(df, code)
+        # 自身完成归一化，避免依赖 minute_strategy
+        code_str = str(code).zfill(6)
+        df = df.copy()
+
+        # 列名映射
+        col_map = {
+            "trade_time": "datetime",
+            "open": "open",
+            "high": "high",
+            "low": "low",
+            "close": "close",
+            "vol": "volume",
+            "amount": "amount",
+        }
+        df = df.rename(columns={k: v for k, v in col_map.items() if k in df.columns})
+
+        if "datetime" not in df.columns:
+            return pd.DataFrame()
+
+        # 兼容 rt_min 返回 HH:MM:SS 的情况
+        dt_text = df["datetime"].astype(str)
+        only_time_mask = dt_text.str.match(r"^\d{2}:\d{2}:\d{2}$", na=False)
+        if only_time_mask.any():
+            today = datetime.now().strftime("%Y-%m-%d")
+            dt_text.loc[only_time_mask] = today + " " + dt_text.loc[only_time_mask]
+
+        df["datetime"] = pd.to_datetime(dt_text, errors="coerce")
+        df = df.dropna(subset=["datetime"])
+        df["code"] = code_str
+
+        for col in ["open", "high", "low", "close", "volume", "amount"]:
+            if col in df.columns:
+                df[col] = pd.to_numeric(df[col], errors="coerce")
+
+        keep_cols = ["datetime", "code", "open", "high", "low", "close", "volume", "amount"]
+        df = df[[c for c in keep_cols if c in df.columns]]
+        df = df.sort_values("datetime").drop_duplicates(subset=["datetime"], keep="last")
+        df = df.reset_index(drop=True)
+
+        return minute_df_to_unified(df)
 
 
 class TushareIndexSource(IndexDataSource):

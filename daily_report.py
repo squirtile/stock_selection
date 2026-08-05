@@ -3,14 +3,16 @@
 """
 每日综合报告脚本
 =================
-1. 运行 main.py 获取策略信号
+0. 自动更新数据（指数日线/分钟 + 个股分钟）
+1. 运行 main.py 获取策略信号（含个股日线自动更新）
 2. 运行 ml_scan.py 对 pkl/ 下所有模型扫描
 3. 合并结果到一份汇总 Excel
 4. 发送邮件到 163 邮箱
 
 用法：
   python3 daily_report.py
-  python3 daily_report.py --force-update  (强制更新日线缓存)
+  python3 daily_report.py --force-update      (强制更新日线缓存)
+  python3 daily_report.py --skip-data-update  (跳过数据更新步骤)
 """
 
 import os
@@ -44,30 +46,139 @@ _WORKERS_UPDATE = 1  # 阶段1联网更新线程数（代理版 Tushare 敏感�
 
 
 # ============================================================
-# 1. 运行 main.py
+# 0. 统一数据准备（个股日线 + 指数日线/分钟 + 个股分钟）
 # ============================================================
 
-def run_main_py(force_update: bool = False, cache_only: bool = False, update_workers: int = 1,
-                update_minute: bool = False, minute_days: int = 365, minute_max_stocks: int = 0) -> str:
-    """运行 main.py，返回输出的 Excel 文件路径"""
+def _get_stock_pool_df() -> pd.DataFrame | None:
+    """获取股票池 DataFrame，优先读本地文件，兜底从 Tushare 加载并过滤。"""
+    stock_pool_file = os.path.join(OUTPUT_DIR, "a_stock_selected.xlsx")
+    if os.path.exists(stock_pool_file):
+        return pd.read_excel(stock_pool_file, dtype={"代码": str})
+    try:
+        from data_loader import load_a_stock_spot, disable_proxy
+        from filters import apply_filters
+        disable_proxy()
+        df = load_a_stock_spot()
+        df = apply_filters(df)  # 应用 config.py 的市值/行业过滤
+        print(f"  Tushare 拉取 {len(df)} 只（已过滤）")
+        return df
+    except Exception:
+        return None
+
+
+def run_data_update(
+    update_stock_daily: bool = True,
+    update_index_daily: bool = True,
+    update_index_minute: bool = True,
+    update_stock_minute: bool = True,
+    stock_minute_max: int = 0,
+    minute_days: int = 60,
+) -> dict:
+    """
+    【统一入口】盘后一键更新全部数据。
+
+      0.1  大盘日线 → index_data.update_index_daily()
+      0.2  大盘分钟 → index_data.update_index_minute()
+      0.3  个股日线 → strategy.update_stock_daily_cache()
+      0.4  个股分钟 → minute_data.update_stock_minute_cache()
+    """
+    print("\n" + "=" * 70)
+    print("📦 第零步：数据准备（大盘日线 → 大盘分钟 → 个股日线 → 个股分钟）")
     print("=" * 70)
+
+    results = {
+        "index_daily": False,
+        "index_minute": False,
+        "stock_daily": False,
+        "stock_minute": False,
+    }
+
+    stock_df = _get_stock_pool_df()
+
+    # ── 0.1 大盘日线 ──
+    if update_index_daily:
+        try:
+            from index_data import update_index_daily
+            t0 = time.time()
+            update_index_daily(days=minute_days)
+            elapsed = (time.time() - t0) / 60
+            results["index_daily"] = True
+            print(f"  ✅ 指数日线更新完成，耗时 {elapsed:.1f} 分钟")
+        except Exception as e:
+            print(f"  ⚠️ 指数日线更新失败: {e}")
+
+    # ── 0.2 指数分钟线（Tushare idx_mins，需权限）──
+    if update_index_minute:
+        try:
+            from index_data import update_index_minute
+            from data_sources import get_index_source
+            source = get_index_source()
+            if source.supports_index_minute():
+                t0 = time.time()
+                update_index_minute(source, days=minute_days, frequencies=["5", "30", "60"])
+                elapsed = (time.time() - t0) / 60
+                results["index_minute"] = True
+                print(f"  ✅ 指数分钟线更新完成，耗时 {elapsed:.1f} 分钟")
+            else:
+                print(f"  ⚠️ 当前数据源({source.name()})不支持指数分钟线，跳过")
+        except Exception as e:
+            print(f"  ⚠️ 指数分钟线更新失败: {e}")
+
+    # ── 0.3 个股日线 ──
+    if update_stock_daily and stock_df is not None:
+        try:
+            from strategy import update_stock_daily_cache
+            t0 = time.time()
+            update_stock_daily_cache(stock_df)
+            elapsed = (time.time() - t0) / 60
+            results["stock_daily"] = True
+            print(f"  ✅ 个股日线更新完成，耗时 {elapsed:.1f} 分钟")
+        except Exception as e:
+            print(f"  ⚠️ 个股日线更新失败: {e}")
+
+    # ── 0.4 个股分钟线 ──
+    if update_stock_minute and stock_df is not None:
+        try:
+            from minute_data import update_stock_minute_cache
+            total = len(stock_df) if stock_minute_max == 0 else min(stock_minute_max, len(stock_df))
+            print(f"  ⏳ 个股分钟线: {total} 只 × [30m, 60m]...")
+            t0 = time.time()
+            update_stock_minute_cache(
+                stock_df=stock_df,
+                max_stocks=stock_minute_max,
+                minute_days=minute_days,
+                frequencies=["30", "60"],
+                include_1m=False,
+            )
+            elapsed = (time.time() - t0) / 60
+            results["stock_minute"] = True
+            print(f"  ✅ 个股分钟线更新完成，耗时 {elapsed:.1f} 分钟")
+        except Exception as e:
+            print(f"  ⚠️ 个股分钟线更新失败: {e}")
+
+    # ── 汇总 ──
+    ok = sum(1 for v in results.values() if v)
+    print(f"\n  📦 数据准备完毕: {ok}/{len(results)} 项成功")
+    return results
+
+
+# ============================================================
+# 1. 运行 main.py（策略扫描 + 信号输出）
+# ============================================================
+
+def run_main_py(force_update: bool = False, cache_only: bool = False, update_workers: int = 1) -> str:
+    """运行 main.py，返回输出的 Excel 文件路径"""
+    print("\n" + "=" * 70)
     print("📊 第一步：运行 main.py 策略信号扫描")
     print("=" * 70)
 
-    cmd = [sys.executable, "main.py", "--workers", str(_WORKERS_MAIN), "--update-workers", str(update_workers), "--no-email"]
+    cmd = [sys.executable, "main.py", "--workers", str(_WORKERS_MAIN), "--update-workers", str(update_workers), "--no-email", "--daily-cache-only"]
     if cache_only:
         cmd.append("--daily-cache-only")
     elif force_update:
         cmd.append("--force-update-daily")
     # --daily-cache-only：强制只用缓存（周末/调试用）
     # 不加参数：17:30 前用缓存，17:30 后自动拉 BaoStock
-
-    # 分钟K线缓存更新（5分钟 + 30分钟，Tushare stk_mins）
-    if update_minute:
-        cmd.append("--update-minute")
-        cmd.extend(["--minute-days", str(minute_days)])
-        if minute_max_stocks > 0:
-            cmd.extend(["--minute-update-stocks", str(minute_max_stocks)])
 
     t0 = time.time()
     result = subprocess.run(cmd, cwd=PROJECT_ROOT)
@@ -152,18 +263,22 @@ def run_pregame_json_scripts() -> None:
             print(f"  ⚠️ tools/{script} 不存在，跳过 {name}。")
             continue
         print(f"  ⏳ 生成 {name}...")
-        r = subprocess.run(
-            [sys.executable, script_path, "--json"],
-            cwd=PROJECT_ROOT,
-            capture_output=True, text=True,
-            encoding="utf-8", errors="replace",
-            env={**os.environ, "PYTHONIOENCODING": "utf-8"},
-        )
-        if r.returncode == 0:
-            print(f"  [OK] {name} 完成")
-        else:
-            err = (r.stderr or r.stdout).strip()[-120:]
-            print(f"  [FAIL] {name}: {err}")
+        try:
+            r = subprocess.run(
+                [sys.executable, script_path, "--json"],
+                cwd=PROJECT_ROOT,
+                capture_output=True, text=True,
+                encoding="utf-8", errors="replace",
+                env={**os.environ, "PYTHONIOENCODING": "utf-8"},
+                timeout=120,
+            )
+            if r.returncode == 0:
+                print(f"  [OK] {name} 完成")
+            else:
+                err = (r.stderr or r.stdout).strip()[-120:]
+                print(f"  [FAIL] {name}: {err}")
+        except subprocess.TimeoutExpired:
+            print(f"  [SKIP] {name} 超时（Tushare盘前可能不可用），跳过")
         time.sleep(0.5)
 
 
@@ -279,6 +394,151 @@ def build_summary_excel(signal_file: str, ml_results: dict[str, str]) -> str:
 # ============================================================
 
 MINI_PROGRAM_JSON = "mini_program_stocks.json"
+
+
+# ============================================================
+# 3.35 缠论选股 + 指数/个股背离 扫描
+# ============================================================
+
+def run_chanlun_divergence_scan() -> dict:
+    """
+    盘后分钟级分析：指数背离 + 个股缠论买点 + 个股分钟背离。
+
+    Returns:
+        {
+            "index_divergence": {...},      # 指数背离结果
+            "chanlun_stocks": [             # 缠论买点股票
+                {"code": "000001", "name": "平安银行", "buy_type": "二买", "price": 11.44, ...},
+            ],
+            "divergence_stocks": [          # 个股分钟背离
+                {"code": "000001", "name": "平安银行", "div_type": "DIF底背离", "price": 11.44, ...},
+            ],
+        }
+    """
+    import json
+    from pathlib import Path
+
+    print("\n" + "=" * 70)
+    print("📊 第 3.35 步：缠论选股 + 背离扫描（30m + 60m）")
+    print("=" * 70)
+
+    result = {
+        "index_divergence": {},
+        "chanlun_stocks": [],
+        "divergence_stocks": [],
+    }
+
+    # ── 3.35.1 指数底背离（30m + 60m）──
+    try:
+        from strategies.index_divergence import check_single_index_divergence, market_bottom_signal, INDEX_MAP
+        idx_all = {}
+        for freq in ["30", "60"]:
+            freq_label = f"{freq}分钟"
+            print(f"  ⏳ 扫描指数{freq_label}底背离...")
+            freq_results = {}
+            for idx_key in INDEX_MAP:
+                freq_results[idx_key] = check_single_index_divergence(idx_key)
+            has_signal, desc = market_bottom_signal(freq_results)
+            idx_all[freq_label] = {
+                "has_signal": has_signal,
+                "description": desc,
+                "indices": {k: {
+                    "name": v["index_name"],
+                    "price": v.get("latest_price", 0),
+                    "bottom_divergence": v.get("bottom_divergence", False),
+                    "golden_cross_divergence": v.get("golden_cross_divergence", False),
+                    "trend": v.get("trend", "neutral"),
+                } for k, v in freq_results.items()},
+            }
+            print(f"    指数{freq_label}底背离：{desc}")
+        result["index_divergence"] = idx_all
+    except Exception as e:
+        print(f"    ⚠️ 指数背离扫描失败：{e}")
+
+    # ── 3.35.2 加载股票池 ──
+    stock_pool_file = os.path.join(OUTPUT_DIR, "a_stock_selected.xlsx")
+    if not os.path.exists(stock_pool_file):
+        print("    ⚠️ 股票池文件不存在，跳过个股扫描")
+        return result
+
+    try:
+        pool_df = pd.read_excel(stock_pool_file, dtype={"代码": str})
+        pool_df["代码"] = pool_df["代码"].astype(str).str.zfill(6)
+    except Exception as e:
+        print(f"    ⚠️ 读取股票池失败：{e}")
+        return result
+
+    name_map = {}
+    if "名称" in pool_df.columns:
+        for _, row in pool_df.iterrows():
+            name_map[str(row["代码"]).zfill(6)] = str(row["名称"])
+
+    # ── 3.35.3 个股缠论买点 + 背离扫描（30m + 60m）──
+    from strategies.chanlun import analyze, detect_all_buy_points
+    from strategies.minute_divergence import check_stock_minute_divergence
+
+    for freq in ["30", "60"]:
+        freq_label = f"{freq}分钟"
+        print(f"  ⏳ 扫描 {len(pool_df)} 只股票的{freq_label}缠论买点与背离...")
+        t0 = time.time()
+        chanlun_count = 0
+        divergence_count = 0
+        no_data_count = 0
+
+        for idx, (_, row) in enumerate(pool_df.iterrows()):
+            code = str(row["代码"]).zfill(6)
+            name = name_map.get(code, "")
+
+            minute_file = os.path.join("cache", "minute", f"{code}_{freq}m.csv")
+            if not os.path.exists(minute_file):
+                no_data_count += 1
+                continue
+
+            try:
+                df = pd.read_csv(minute_file, dtype={"代码": str})
+                if df.empty or len(df) < 60:
+                    no_data_count += 1
+                    continue
+
+                # 缠论分析
+                ctx = analyze(df)
+                if ctx is not None and ctx.strokes and len(ctx.strokes) >= 3:
+                    _, buy_points = detect_all_buy_points(df)
+                    for bp in buy_points:
+                        result["chanlun_stocks"].append({
+                            "code": code,
+                            "name": name,
+                            "buy_type": bp.type,
+                            "price": round(bp.price, 2),
+                            "confidence": round(bp.confidence, 2),
+                            "reason": bp.reason or "",
+                            "frequency": freq_label,
+                        })
+                        chanlun_count += 1
+
+                # 个股分钟背离（只要MACD金叉背离）
+                div_result = check_stock_minute_divergence(code, frequency=freq)
+                if div_result.get("golden_cross_divergence"):
+                    result["divergence_stocks"].append({
+                        "code": code,
+                        "name": name,
+                        "div_type": "MACD金叉背离",
+                        "price": div_result.get("latest_price", 0),
+                        "frequency": freq_label,
+                    })
+                    divergence_count += 1
+
+            except Exception:
+                continue
+
+            if (idx + 1) % 200 == 0:
+                print(f"    进度: {idx+1}/{len(pool_df)} | 缠论: {chanlun_count} | 背离: {divergence_count}")
+
+        elapsed = time.time() - t0
+        print(f"    {freq_label}完成：缠论买点 {chanlun_count} 个, 背离信号 {divergence_count} 个, "
+              f"无数据 {no_data_count} 只, 耗时 {elapsed:.1f} 秒")
+
+    return result
 
 # ============================================================
 # 动态策略映射（从 registry.py 自动读取，新增策略无需改这里）
@@ -504,9 +764,9 @@ def _build_kline_data(code: str, hist_dir: str, days: int = 30) -> list[dict]:
     return klines
 
 
-def build_mini_program_json(signal_file: str, ml_results: dict[str, str]) -> str:
+def build_mini_program_json(signal_file: str, ml_results: dict[str, str], chanlun_data: dict | None = None) -> str:
     """
-    合并策略信号 + ML 扫描结果，生成小程序可直接展示的 JSON 文件。
+    合并策略信号 + ML 扫描结果 + 缠论/背离，生成小程序可直接展示的 JSON 文件。
 
     返回 JSON 文件路径。
     """
@@ -755,6 +1015,116 @@ def build_mini_program_json(signal_file: str, ml_results: dict[str, str]) -> str
             "children": ml_children,
         })
 
+    # ---------- 缠论选股 + 背离 标签（30m + 60m）---------- 
+    chanlun_tab_children = []
+    divergence_tab_children = []
+
+    if chanlun_data:
+        # 按 频率→买卖点 两级分组
+        freq_buy_groups: dict[str, dict[str, list]] = {}  # {频率: {买点类型: [stocks]}}
+        for cs in chanlun_data.get("chanlun_stocks", []):
+            freq = cs.get("frequency", "30分钟")
+            bt = cs.get("buy_type", "其他")
+            freq_buy_groups.setdefault(freq, {}).setdefault(bt, []).append(cs)
+
+        for freq in ["30分钟", "60分钟"]:
+            buy_groups = freq_buy_groups.get(freq, {})
+            # chanlun 返回 "1B"/"2B"/"3B"，映射为中文
+            type_map = {"1B": "一买", "2B": "二买", "3B": "三买"}
+            for bt_code, bt_cn in type_map.items():
+                stocks = buy_groups.get(bt_code, [])
+                if stocks:
+                    top_n = min(len(stocks), 10)
+                    chanlun_tab_children.append({
+                        "key": f"chanlun_{freq}_{bt_code}",
+                        "label": f"{freq}·缠论{bt_cn}",
+                        "count": top_n,
+                    })
+                    for cs in stocks[:top_n]:
+                        code = cs["code"]
+                        if code not in picked_codes:
+                            picked_codes.add(code)
+                            final_stocks.append({
+                                "code": code,
+                                "name": cs.get("name", ""),
+                                "price": cs.get("price"),
+                                "pct": None,
+                                "industry": "",
+                                "marketCap": None,
+                                "concept": "",
+                                "strategy": f"{freq}缠论{bt_cn}",
+                                "strategyCount": 0,
+                                "strategyTypes": [{"group": "缠论选股", "groupKey": "chanlun", "name": f"{freq}缠论{bt_cn}"}],
+                                "limitUpStatus": "",
+                                "mlScore": None,
+                                "mlModel": "",
+                                "mlModels": [],
+                                "score": 85,
+                                "categories": ["缠论选股"],
+                            })
+
+        # 背离 → 按 频率×类型 分组
+        freq_div_groups: dict[str, dict[str, list]] = {}
+        for ds in chanlun_data.get("divergence_stocks", []):
+            freq = ds.get("frequency", "30分钟")
+            dt = ds.get("div_type", "背离")
+            freq_div_groups.setdefault(freq, {}).setdefault(dt, []).append(ds)
+
+        for freq in ["30分钟", "60分钟"]:
+            div_groups = freq_div_groups.get(freq, {})
+            for dt in ["MACD金叉背离"]:  # 只要 MACD 金叉背离，不要 DIF 底背离
+                stocks = div_groups.get(dt, [])
+                if stocks:
+                    top_n = min(len(stocks), 10)
+                    divergence_tab_children.append({
+                        "key": f"divergence_{freq}_{dt}",
+                        "label": f"{freq}·{dt}",
+                        "count": top_n,
+                    })
+                    for ds in stocks[:top_n]:
+                        code = ds["code"]
+                        if code not in picked_codes:
+                            picked_codes.add(code)
+                            final_stocks.append({
+                                "code": code,
+                                "name": ds.get("name", ""),
+                                "price": ds.get("price"),
+                                "pct": None,
+                                "industry": "",
+                                "marketCap": None,
+                                "concept": "",
+                                "strategy": f"{freq}{dt}",
+                                "strategyCount": 0,
+                                "strategyTypes": [{"group": "背离信号", "groupKey": "divergence", "name": f"{freq}{dt}"}],
+                                "limitUpStatus": "",
+                                "mlScore": None,
+                                "mlModel": "",
+                                "mlModels": [],
+                                "score": 82,
+                                "categories": ["背离信号"],
+                            })
+
+    # 缠论选股 tab 组
+    if chanlun_tab_children:
+        chanlun_codes = set()
+        for c in chanlun_tab_children:
+            chanlun_codes.add(c["key"])
+        tab_groups.append({
+            "key": "缠论选股",
+            "label": "缠论选股",
+            "count": sum(c["count"] for c in chanlun_tab_children),
+            "children": chanlun_tab_children,
+        })
+
+    # 背离信号 tab 组
+    if divergence_tab_children:
+        tab_groups.append({
+            "key": "背离信号",
+            "label": "背离信号",
+            "count": sum(c["count"] for c in divergence_tab_children),
+            "children": divergence_tab_children,
+        })
+
     # ---------- 补充 K 线 + 均线数据 ----------
     hist_dir = os.path.join(PROJECT_ROOT, "cache", "hist")
     kline_count = 0
@@ -821,21 +1191,26 @@ def build_mini_program_json(signal_file: str, ml_results: dict[str, str]) -> str
     print(f"  板块标签：{labeled_count}/{len(final_stocks)} 只已标记")
 
     # ---------- 写 JSON ----------
+    market_ctx = {
+        "trend": market_context.get("market", {}).get("trend", "neutral") if market_context else "neutral",
+        "label": market_trend,
+        "tradeDate": market_context.get("trade_date", "") if market_context else "",
+    }
+    # 附加指数背离信息（30m + 60m）
+    if chanlun_data and chanlun_data.get("index_divergence"):
+        market_ctx["indexDivergence"] = chanlun_data["index_divergence"]
+
     result = {
         "time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         "source": f"daily_report + {len(ml_results)} ML models",
         "total": len(final_stocks),
         "tabGroups": tab_groups,
-        "marketContext": {
-            "trend": market_context.get("market", {}).get("trend", "neutral") if market_context else "neutral",
-            "label": market_trend,
-            "tradeDate": market_context.get("trade_date", "") if market_context else "",
-        },
+        "marketContext": market_ctx,
         "stocks": final_stocks,
     }
 
     with open(output_path, "w", encoding="utf-8") as f:
-        json.dump(result, f, ensure_ascii=False, indent=2)
+        json.dump(result, f, ensure_ascii=False, indent=2, default=str)
 
     print(f"  策略命中：{sum(1 for s in stocks_list if s['strategyCount'] > 0)} 只")
     print(f"  ML 命中：{sum(1 for s in stocks_list if s['mlScore'] is not None)} 只")
@@ -1065,24 +1440,35 @@ def main():
     parser.add_argument("--force-update", action="store_true", help="强制更新 BaoStock 日线缓存")
     parser.add_argument("--cache-only", action="store_true", help="强制只用本地缓存（周末/调试用，不请求BaoStock）")
     parser.add_argument("--no-email", action="store_true", help="跳过邮件和飞书发送")
+    parser.add_argument("--skip-data-update", action="store_true", help="跳过盘后数据更新步骤（指数+个股分钟）")
     parser.add_argument("--update-workers", type=int, default=_WORKERS_UPDATE, help="阶段1联网更新线程数")
-    parser.add_argument("--update-minute", action="store_true", help="日线扫描后自动更新 5分钟/30分钟缓存（Tushare stk_mins）")
-    parser.add_argument("--minute-days", type=int, default=365, help="分钟缓存保留天数，默认365")
+    parser.add_argument("--minute-days", type=int, default=60, help="分钟缓存保留天数，默认60")
     parser.add_argument("--minute-max-stocks", type=int, default=0, help="分钟缓存更新最大股票数，0=全部")
+    parser.add_argument("--skip-pregame", action="store_true", help="跳过盘前数据准备（板块热度/资金流向/连板天梯，Tushare经常卡）")
     args = parser.parse_args()
 
     start_time = datetime.now()
     print(f"\n⏰ 开始时间：{start_time.strftime('%Y-%m-%d %H:%M:%S')}")
     total_start = time.time()
 
+    # 0. 数据准备（只做个股分钟，指数日线/分钟由 main.py 内部管理）
+    if not args.skip_data_update:
+        run_data_update(
+            update_stock_daily=True,
+            update_index_daily=True,
+            update_index_minute=True,
+            update_stock_minute=True,
+            stock_minute_max=args.minute_max_stocks,
+            minute_days=args.minute_days,
+        )
+    else:
+        print("\n⏭️ 跳过数据更新（--skip-data-update）")
+
     # 1. 策略信号
     signal_file = run_main_py(
         force_update=args.force_update,
-        cache_only=args.cache_only,
+        cache_only=args.cache_only or args.skip_data_update,
         update_workers=args.update_workers,
-        update_minute=args.update_minute,
-        minute_days=args.minute_days,
-        minute_max_stocks=args.minute_max_stocks,
     )
 
     # 2. ML 扫描
@@ -1092,13 +1478,19 @@ def main():
     summary_file = build_summary_excel(signal_file, ml_results)
 
     # 3.3 板块热度 / 资金流向 / 连板天梯（盘前数据准备）
-    run_pregame_json_scripts()
+    if args.skip_pregame:
+        print("\n⏭️ 跳过盘前数据准备（--skip-pregame）")
+    else:
+        run_pregame_json_scripts()
+
+    # 3.35 缠论选股 + 指数/个股背离（盘后分钟级分析）
+    chanlun_data = run_chanlun_divergence_scan()
 
     # 3.4 市场环境评估（板块热度标签）
     run_market_context()
 
     # 3.5 生成小程序 JSON
-    build_mini_program_json(signal_file, ml_results)
+    build_mini_program_json(signal_file, ml_results, chanlun_data=chanlun_data)
 
     if args.no_email:
         print("\n" + "=" * 70)

@@ -9,7 +9,7 @@ venv/
 
 # runtime outputs and caches
 output/
-cache/
+# cache/
 
 # Excel / WPS temp files
 ~$*.xlsx

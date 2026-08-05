@@ -181,7 +181,10 @@ a{text-decoration:none;color:inherit}
 <div class="money-subtab" data-mtab="industry">行业</div>
 <div class="money-subtab" data-mtab="concept">概念</div>
 </div>
-<div id="moneyContent"><div class="empty"><div class="icon">💰</div><div class="text">加载中…</div></div></div>
+<div id="moneyContent">
+<div id="moneyFlowInner"><div class="empty"><div class="icon">💰</div><div class="text">加载中…</div></div></div>
+<div id="indexDivergenceArea"></div>
+</div>
 </div>
 <!-- ===== 策略扫描 ===== -->
 <div id="panel-strategies" class="tab-panel" style="display:none">
@@ -211,6 +214,35 @@ a{text-decoration:none;color:inherit}
 <div id="panel-sector" class="tab-panel" style="display:none"><div id="sectorContent"><div class="empty"><div class="icon">🔥</div><div class="text">加载中…</div></div></div></div>
 </div>
 <script>
+// === 资金动向 ===
+function renderIndexDivergence(){
+  const area=document.getElementById('indexDivergenceArea');
+  const data={{ indexDivergence|tojson if indexDivergence else '{}' }};
+  if(!data||Object.keys(data).length===0){area.innerHTML='';return}
+  let anyDiv=false;
+  for(const[,info] of Object.entries(data)){
+    for(const[,v] of Object.entries(info.indices||{})){
+      if(v.bottom_divergence||v.golden_cross_divergence){anyDiv=true;break}
+    }
+    if(anyDiv)break;
+  }
+  if(!anyDiv){area.innerHTML='';return}
+  let h='<div style="display:flex;gap:12px;flex-wrap:wrap">';
+  for(const[freq,info] of Object.entries(data)){
+    h+='<div style="flex:1;min-width:170px;background:linear-gradient(135deg,#f0f4ff,#e8edfa);border-radius:12px;padding:14px 16px;border:1px solid #d0d8f0">';
+    h+='<div style="font-weight:700;font-size:14px;margin-bottom:10px;color:#3b4a6b">⏱ '+freq+' 底背离</div>';
+    for(const[k,v] of Object.entries(info.indices||{})){
+      let tags='';
+      if(v.bottom_divergence)tags+='<span style="background:#ef4444;color:#fff;padding:2px 8px;border-radius:4px;font-size:11px;margin-left:4px">背离</span>';
+      if(v.golden_cross_divergence)tags+='<span style="background:#f59e0b;color:#000;padding:2px 8px;border-radius:4px;font-size:11px;margin-left:4px">金叉</span>';
+      if(!tags)tags='<span style="color:#22c55e;font-size:11px">✅</span>';
+      h+='<div style="display:flex;justify-content:space-between;align-items:center;padding:4px 0;font-size:13px;border-bottom:1px solid rgba(0,0,0,.06)"><span style="color:#333">'+v.name+'</span><span>'+tags+'</span></div>';
+    }
+    h+='<div style="font-size:11px;color:#d97706;margin-top:8px;font-weight:600">'+ (info.description||'') +'</div></div>';
+  }
+  h+='</div>';area.innerHTML=h;
+}
+
 // === 资金动向：页面加载即拉取（默认首页）===
 loadMoney();window._md=1;
 // 资金动向子标签切换
@@ -221,10 +253,10 @@ renderMoneyView(this.dataset.mtab);
 window._moneySort='net';window._moneySortDir='desc'; // 默认按资金净额从高到低
 
 // === 资金动向渲染 ===
-function loadMoney(){fetch('/api/moneyflow').then(r=>r.json()).then(data=>{window._moneyData=data;if(!data.success){document.getElementById('moneyContent').innerHTML='<div class=\"empty\"><div class=\"icon\">💰</div><div class=\"text\">暂无数据</div></div>';return}renderMoneyView('market')}).catch(()=>{document.getElementById('moneyContent').innerHTML='<div class=\"empty\"><div class=\"icon\">⚠️</div><div class=\"text\">加载失败</div></div>'})}
+function loadMoney(){fetch('/api/moneyflow').then(r=>r.json()).then(data=>{window._moneyData=data;if(!data.success){document.getElementById('moneyFlowInner').innerHTML='<div class=\"empty\"><div class=\"icon\">💰</div><div class=\"text\">暂无数据</div></div>';return}renderMoneyView('market');renderIndexDivergence()}).catch(()=>{document.getElementById('moneyFlowInner').innerHTML='<div class=\"empty\"><div class=\"icon\">⚠️</div><div class=\"text\">加载失败</div></div>'})}
 function renderMoneyView(tab){
   const data=window._moneyData;
-  const c=document.getElementById('moneyContent');
+  const c=document.getElementById('moneyFlowInner');
   if(!data||!data.success)return;
   const m=data.mkt;
   if(tab==='market'){
@@ -332,7 +364,7 @@ this.classList.add('active');
 filterStocks(this.dataset.parent,this.dataset.key)
 })});
 
-function filterStocks(l1,l2){const TOP=10;const cards=document.querySelectorAll('#stockList .stock-card');let vis=[];cards.forEach(card=>{const cats=JSON.parse(card.dataset.categories||'[]'),sts=JSON.parse(card.dataset.strategytypes||'[]'),mls=JSON.parse(card.dataset.mlmodels||'[]');let s=false;if(l1==='策略信号'){if(cats.includes('策略信号'))s=l2?sts.some(t=>t.groupKey===l2||t.name===l2):true}else if(l1==='ML模型信号'){if(cats.includes('ML模型信号'))s=l2?mls.some(m=>m.key===l2):true}else{s=cats.length===0||cats.includes(l1)}if(s)vis.push({card,score:parseInt(card.dataset.score)||0})});if(l2){vis.sort((a,b)=>b.score-a.score);vis=vis.slice(0,TOP)}cards.forEach(c=>c.style.display='none');vis.forEach(v=>v.card.style.display='')}
+function filterStocks(l1,l2){const TOP=10;const cards=document.querySelectorAll('#stockList .stock-card');let vis=[];cards.forEach(card=>{const cats=JSON.parse(card.dataset.categories||'[]'),sts=JSON.parse(card.dataset.strategytypes||'[]'),mls=JSON.parse(card.dataset.mlmodels||'[]');let s=false;if(l1==='策略信号'){if(cats.includes('策略信号'))s=l2?sts.some(t=>t.groupKey===l2||t.name===l2):true}else if(l1==='ML模型信号'){if(cats.includes('ML模型信号'))s=l2?mls.some(m=>m.key===l2):true}else if(l2){const chip=document.querySelector('#level2Tabs .sub-chip[data-key="'+l2+'"]');const raw=chip?chip.textContent:'',label=raw.replace(/\d+$/,'').replace(/[·\s]/g,'').trim();s=cats.includes(l1)&&sts.some(t=>t.name.replace(/[·\s]/g,'')===label)}else{s=cats.includes(l1)}if(s)vis.push({card,score:parseInt(card.dataset.score)||0})});if(l2){vis.sort((a,b)=>b.score-a.score);vis=vis.slice(0,TOP)}cards.forEach(c=>c.style.display='none');vis.forEach(v=>v.card.style.display='')}
 
 // === K线（插入到卡片外部，跨整行全宽）===
 function toggleKline(card){const code=card.dataset.code;let area=document.querySelector('.kline-area[data-code="'+code+'"]');if(area){area.remove();return}area=document.createElement('div');area.className='kline-area';area.dataset.code=code;area.style.cssText='margin:0 0 8px 0;padding:12px 14px;background:#fafbfc;border-radius:10px;border:1px solid #e0e0e0';const hdr=document.createElement('div');hdr.style.cssText='display:flex;align-items:center;gap:8px;margin-bottom:8px;font-size:12px;color:#666';hdr.innerHTML='<span style="font-weight:700;color:#1a1a2e">'+code+'</span> 最近30日K线 <span style="font-size:10px;color:#aaa;cursor:pointer;margin-left:auto" onclick="this.closest(\'.kline-area\').remove()">✕ 收起</span>';area.appendChild(hdr);const img=document.createElement('img');img.style.width='100%';img.style.borderRadius='6px';area.appendChild(img);card.after(area);fetch('/api/stock/'+code+'/kline').then(r=>r.json()).then(d=>{if(d.success&&d.data.length)drawKline(code,d.data,img);else img.alt='无数据'}).catch(()=>{img.alt='加载失败'})}

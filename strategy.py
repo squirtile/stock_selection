@@ -950,10 +950,12 @@ def prepare_hist_data(df: pd.DataFrame) -> pd.DataFrame:
             continue
 
         # ---- 第五步：右底成交缩量（右底附近均量 < 左底附近均量）----
-        left_vol_slice = vol_w[max(0, left_bot_idx - 3):left_bot_idx + 4]
-        right_vol_slice = vol_w[max(0, right_bot_idx - 3):right_bot_idx + 4]
-        left_vol_avg = np.nanmean(left_vol_slice) if len(left_vol_slice) > 0 else np.nan
-        right_vol_avg = np.nanmean(right_vol_slice) if len(right_vol_slice) > 0 else np.nan
+        with warnings.catch_warnings():
+            warnings.filterwarnings("ignore", "Mean of empty slice")
+            left_vol_slice = vol_w[max(0, left_bot_idx - 3):left_bot_idx + 4]
+            right_vol_slice = vol_w[max(0, right_bot_idx - 3):right_bot_idx + 4]
+            left_vol_avg = np.nanmean(left_vol_slice) if len(left_vol_slice) > 0 else np.nan
+            right_vol_avg = np.nanmean(right_vol_slice) if len(right_vol_slice) > 0 else np.nan
         vol_shrink = right_vol_avg / left_vol_avg if (not np.isnan(left_vol_avg) and left_vol_avg > 0) else np.nan
 
         # ---- 第六步：今日突破颈线 + 放量确认 ----
@@ -1310,12 +1312,63 @@ def check_main_rising_signal(
         return False, "", None
 
 
+def update_stock_daily_cache(
+    stock_pool_df: pd.DataFrame,
+    force_update: bool = False,
+    update_workers: int = 1,
+):
+    """
+    批量更新个股日K缓存（cache/hist/），不扫描策略。
+    从 scan_main_rising_stocks 中独立出来，供 daily_report.py 第零步调用。
+    """
+    from threading import Lock
+    total = len(stock_pool_df)
+    uw = max(1, min(update_workers, 5))
+    if DATA_SOURCE == "baostock" and uw > 1:
+        uw = 1
+    print(f"\n  个股日K缓存更新：{uw}线程，{total} 只")
+    if DATA_SOURCE == "baostock":
+        import baostock as bs
+        for attempt in range(3):
+            try:
+                lg = bs.login()
+                if getattr(lg, "error_code", None) == "0": break
+            except Exception: pass
+            if attempt < 2: time.sleep(2)
+    phase_start = time.time()
+    failed, counter, lock = [], [0], Lock()
+    stocks_list = list(stock_pool_df.iterrows())
+    def _upd(idx_and_row):
+        idx, row = idx_and_row
+        code = str(row["代码"]).zfill(6)
+        try: get_hist_data(code, cache_only=False, force_update=force_update)
+        except Exception:
+            with lock: failed.append(code)
+        with lock:
+            counter[0] += 1
+            i = counter[0]
+            elapsed = time.time() - phase_start
+            remain = (total - i) * elapsed / i if i > 0 else 0
+            print(f"  日K缓存: {i}/{total} | {code} | 剩余 {remain/60:.1f}min", end="\r", flush=True)
+    if uw == 1:
+        for item in stocks_list: _upd(item)
+    else:
+        with ThreadPoolExecutor(max_workers=uw) as executor:
+            list(executor.map(_upd, stocks_list))
+    if DATA_SOURCE == "baostock":
+        try: bs.logout()
+        except Exception: pass
+    print()
+    print(f"  个股日K缓存更新完成, {total}只, {len(failed)}失败, 耗时 {(time.time()-phase_start)/60:.1f}分钟")
+
+
 def scan_main_rising_stocks(
     stock_pool_df: pd.DataFrame,
     cache_only: bool = False,
     force_update: bool = False,
     workers: int = 1,
     update_workers: int = 1,
+    skip_update: bool = False,
 ) -> pd.DataFrame:
     """
     对基础股票池进行主升信号扫描。
@@ -1335,6 +1388,10 @@ def scan_main_rising_stocks(
         cache_only=cache_only,
         force_update=force_update,
     )
+
+    # 由 daily_report.py 第零步统一处理后，此处跳过
+    if skip_update:
+        allow_update = False
 
     if allow_update:
         if force_update:

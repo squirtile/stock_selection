@@ -65,7 +65,7 @@ def get_tushare_pro():
 
     disable_proxy()
 
-    pro = ts.pro_api(token)
+    pro = ts.pro_api(token, timeout=30)  # 30秒超时，避免Tushare卡死
 
     if http_url:
         pro._DataApi__http_url = http_url
