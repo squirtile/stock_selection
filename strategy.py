@@ -1326,7 +1326,11 @@ def update_stock_daily_cache(
     uw = max(1, min(update_workers, 5))
     if DATA_SOURCE == "baostock" and uw > 1:
         uw = 1
-    print(f"\n  个股日K缓存更新：{uw}线程，{total} 只")
+    print(f"\n{'='*70}")
+    print(f"📊 个股日K线更新")
+    print(f"{'='*70}")
+    print(f"  数据源: {DATA_SOURCE}")
+    print(f"  股票数: {total} 只 | 并发: {uw} 线程")
     if DATA_SOURCE == "baostock":
         import baostock as bs
         for attempt in range(3):

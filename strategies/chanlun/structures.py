@@ -128,6 +128,25 @@ class BuyPoint:
     reason: str = ""
 
 
+@dataclass
+class SellPoint:
+    """
+    缠论卖点。
+
+    一卖(1S): 上涨趋势末端，顶背驰后反转 → 左侧卖点
+    二卖(2S): 一卖回落后反弹不创新高 → 确认卖点
+    三卖(3S): 跌破中枢后反弹不站回中枢下沿 → 趋势跟随卖点
+    """
+
+    type: Literal["1S", "2S", "3S"]
+    index: int                  # K线索引位置
+    time: object
+    price: float
+    pivot: Optional[Pivot] = None  # 相关中枢
+    confidence: float = 0.0     # 置信度 0~1
+    reason: str = ""
+
+
 # ── 缠论上下文 ────────────────────────────────────────────
 @dataclass
 class ChanlunContext:
@@ -145,3 +164,4 @@ class ChanlunContext:
     pivots: List[Pivot] = field(default_factory=list)
     trend: Optional[TrendAnalysis] = None
     buy_points: List[BuyPoint] = field(default_factory=list)
+    sell_points: List[SellPoint] = field(default_factory=list)

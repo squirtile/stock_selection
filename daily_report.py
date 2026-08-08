@@ -318,40 +318,38 @@ def run_market_context() -> str:
 # 3. 合并汇总
 # ============================================================
 
-def build_summary_excel(signal_file: str, ml_results: dict[str, str]) -> str:
-    """合并策略信号和所有 ML 扫描结果到一个 Excel"""
+def build_summary_excel(signal_file: str, ml_results: dict[str, str], chanlun_data: dict = None) -> str:
+    """合并策略信号、ML 扫描、缠论选股、背离信号到一个 Excel"""
     print("\n" + "=" * 70)
     print("📋 第三步：合并汇总")
     print("=" * 70)
+    chanlun_data = chanlun_data or {}
 
     today = datetime.now().strftime("%Y%m%d_%H%M%S")
     summary_file = os.path.join(OUTPUT_DIR, f"daily_report_{today}.xlsx")
 
     with pd.ExcelWriter(summary_file, engine="openpyxl") as writer:
-        # Sheet 1: 策略信号（直接复制）
+        # ── Sheet 1: 策略信号（直接复制）──
         if signal_file and os.path.exists(signal_file):
             strategy_df = pd.read_excel(signal_file, sheet_name="全部信号")
-            strategy_df.to_excel(writer, sheet_name="策略信号_全部", index=False)
+            strategy_df.to_excel(writer, sheet_name="1-策略信号", index=False)
             print(f"  策略信号：{len(strategy_df)} 只")
         else:
             strategy_df = pd.DataFrame()
             print("  策略信号：无")
 
-        # Sheet 2+: 每个 ML 模型的结果
-        all_ml_signals = {}  # {代码: {pkl名: 评分}}
+        # ── Sheet 2+: 每个 ML 模型的结果 ──
+        all_ml_signals = {}
         for pkl_name, filepath in ml_results.items():
             try:
                 df = pd.read_excel(filepath, sheet_name="全部ML评分")
-                # 确保列名兼容
                 code_col = next((c for c in ["股票代码", "代码", "code"] if c in df.columns), None)
                 score_col = next((c for c in ["ML分数", "ML评分", "评分", "score", "信号强度", "平均相似度", "相似度"] if c in df.columns), None)
                 if code_col and score_col:
                     df[code_col] = df[code_col].astype(str).str.zfill(6)
-                    sheet_name = f"ML_{pkl_name}"[:31]
+                    sheet_name = f"2-ML_{pkl_name}"[:31]
                     df.to_excel(writer, sheet_name=sheet_name, index=False)
                     print(f"  ML_{pkl_name}：{len(df)} 只")
-
-                    # 收集信号
                     for _, row in df.iterrows():
                         code = str(row[code_col]).zfill(6)
                         score = row[score_col]
@@ -360,6 +358,56 @@ def build_summary_excel(signal_file: str, ml_results: dict[str, str]) -> str:
                     print(f"  ⚠️ ML_{pkl_name}：未找到评分列（实际列：{list(df.columns)}）")
             except Exception as e:
                 print(f"  ⚠️ ML_{pkl_name} 读取失败：{e}")
+
+        # ── Sheet: 缠论选股_买点 ──
+        buy_stocks = chanlun_data.get("chanlun_stocks", [])
+        if buy_stocks:
+            buy_df = pd.DataFrame(buy_stocks)
+            buy_df = buy_df.rename(columns={
+                "code": "代码", "name": "名称", "buy_type": "买点类型",
+                "price": "价格", "confidence": "置信度", "reason": "原因",
+                "frequency": "周期",
+            })
+            buy_cols = ["代码", "名称", "周期", "买点类型", "价格", "置信度", "原因"]
+            buy_df = buy_df[[c for c in buy_cols if c in buy_df.columns]]
+            buy_df.to_excel(writer, sheet_name="3-缠论选股_买点", index=False)
+            print(f"  缠论买点：{len(buy_df)} 个")
+        else:
+            pd.DataFrame({"提示": ["暂无缠论买点信号"]}).to_excel(writer, sheet_name="3-缠论选股_买点", index=False)
+            print("  缠论买点：无")
+
+        # ── Sheet: 缠论选股_卖点 ──
+        sell_stocks = chanlun_data.get("chanlun_sell_stocks", [])
+        if sell_stocks:
+            sell_df = pd.DataFrame(sell_stocks)
+            sell_df = sell_df.rename(columns={
+                "code": "代码", "name": "名称", "sell_type": "卖点类型",
+                "price": "价格", "confidence": "置信度", "reason": "原因",
+                "frequency": "周期",
+            })
+            sell_cols = ["代码", "名称", "周期", "卖点类型", "价格", "置信度", "原因"]
+            sell_df = sell_df[[c for c in sell_cols if c in sell_df.columns]]
+            sell_df.to_excel(writer, sheet_name="3-缠论选股_卖点", index=False)
+            print(f"  缠论卖点：{len(sell_df)} 个")
+        else:
+            pd.DataFrame({"提示": ["暂无缠论卖点信号"]}).to_excel(writer, sheet_name="3-缠论选股_卖点", index=False)
+            print("  缠论卖点：无")
+
+        # ── Sheet: 背离信号 ──
+        div_stocks = chanlun_data.get("divergence_stocks", [])
+        if div_stocks:
+            div_df = pd.DataFrame(div_stocks)
+            div_df = div_df.rename(columns={
+                "code": "代码", "name": "名称", "div_type": "背离类型",
+                "price": "价格", "frequency": "周期",
+            })
+            div_cols = ["代码", "名称", "周期", "背离类型", "价格"]
+            div_df = div_df[[c for c in div_cols if c in div_df.columns]]
+            div_df.to_excel(writer, sheet_name="4-背离信号", index=False)
+            print(f"  背离信号：{len(div_df)} 个")
+        else:
+            pd.DataFrame({"提示": ["暂无不股背离信号"]}).to_excel(writer, sheet_name="4-背离信号", index=False)
+            print("  背离信号：无")
 
         # Sheet: 对比汇总
         if all_ml_signals:
@@ -425,6 +473,7 @@ def run_chanlun_divergence_scan() -> dict:
     result = {
         "index_divergence": {},
         "chanlun_stocks": [],
+        "chanlun_sell_stocks": [],
         "divergence_stocks": [],
     }
 
@@ -437,7 +486,7 @@ def run_chanlun_divergence_scan() -> dict:
             print(f"  ⏳ 扫描指数{freq_label}底背离...")
             freq_results = {}
             for idx_key in INDEX_MAP:
-                freq_results[idx_key] = check_single_index_divergence(idx_key)
+                freq_results[idx_key] = check_single_index_divergence(idx_key, frequency=freq)
             has_signal, desc = market_bottom_signal(freq_results)
             idx_all[freq_label] = {
                 "has_signal": has_signal,
@@ -473,8 +522,8 @@ def run_chanlun_divergence_scan() -> dict:
         for _, row in pool_df.iterrows():
             name_map[str(row["代码"]).zfill(6)] = str(row["名称"])
 
-    # ── 3.35.3 个股缠论买点 + 背离扫描（30m + 60m）──
-    from strategies.chanlun import analyze, detect_all_buy_points
+    # ── 3.35.3 个股缠论买点+卖点 + 背离扫描（30m + 60m）──
+    from strategies.chanlun import analyze, detect_all_buy_points, detect_all_sell_points
     from strategies.minute_divergence import check_stock_minute_divergence
 
     for freq in ["30", "60"]:
@@ -500,7 +549,7 @@ def run_chanlun_divergence_scan() -> dict:
                     no_data_count += 1
                     continue
 
-                # 缠论分析
+                # 缠论分析（买点+卖点）
                 ctx = analyze(df)
                 if ctx is not None and ctx.strokes and len(ctx.strokes) >= 3:
                     _, buy_points = detect_all_buy_points(df)
@@ -515,6 +564,18 @@ def run_chanlun_divergence_scan() -> dict:
                             "frequency": freq_label,
                         })
                         chanlun_count += 1
+
+                    _, sell_points = detect_all_sell_points(df)
+                    for sp in sell_points:
+                        result["chanlun_sell_stocks"].append({
+                            "code": code,
+                            "name": name,
+                            "sell_type": sp.type,
+                            "price": round(sp.price, 2),
+                            "confidence": round(sp.confidence, 2),
+                            "reason": sp.reason or "",
+                            "frequency": freq_label,
+                        })
 
                 # 个股分钟背离（只要MACD金叉背离）
                 div_result = check_stock_minute_divergence(code, frequency=freq)
@@ -1015,22 +1076,21 @@ def build_mini_program_json(signal_file: str, ml_results: dict[str, str], chanlu
             "children": ml_children,
         })
 
-    # ---------- 缠论选股 + 背离 标签（30m + 60m）---------- 
+    # ---------- 缠论选股（买点+卖点）+ 背离 标签（30m + 60m）---------- 
     chanlun_tab_children = []
     divergence_tab_children = []
 
     if chanlun_data:
-        # 按 频率→买卖点 两级分组
-        freq_buy_groups: dict[str, dict[str, list]] = {}  # {频率: {买点类型: [stocks]}}
+        # ── 买点分组 ──
+        freq_buy_groups: dict[str, dict[str, list]] = {}
         for cs in chanlun_data.get("chanlun_stocks", []):
             freq = cs.get("frequency", "30分钟")
             bt = cs.get("buy_type", "其他")
             freq_buy_groups.setdefault(freq, {}).setdefault(bt, []).append(cs)
 
+        type_map = {"1B": "一买", "2B": "二买", "3B": "三买"}
         for freq in ["30分钟", "60分钟"]:
             buy_groups = freq_buy_groups.get(freq, {})
-            # chanlun 返回 "1B"/"2B"/"3B"，映射为中文
-            type_map = {"1B": "一买", "2B": "二买", "3B": "三买"}
             for bt_code, bt_cn in type_map.items():
                 stocks = buy_groups.get(bt_code, [])
                 if stocks:
@@ -1038,6 +1098,7 @@ def build_mini_program_json(signal_file: str, ml_results: dict[str, str], chanlu
                     chanlun_tab_children.append({
                         "key": f"chanlun_{freq}_{bt_code}",
                         "label": f"{freq}·缠论{bt_cn}",
+                        "subgroup": "买点",
                         "count": top_n,
                     })
                     for cs in stocks[:top_n]:
@@ -1055,6 +1116,49 @@ def build_mini_program_json(signal_file: str, ml_results: dict[str, str], chanlu
                                 "strategy": f"{freq}缠论{bt_cn}",
                                 "strategyCount": 0,
                                 "strategyTypes": [{"group": "缠论选股", "groupKey": "chanlun", "name": f"{freq}缠论{bt_cn}"}],
+                                "limitUpStatus": "",
+                                "mlScore": None,
+                                "mlModel": "",
+                                "mlModels": [],
+                                "score": 85,
+                                "categories": ["缠论选股"],
+                            })
+
+        # ── 卖点分组 ──
+        freq_sell_groups: dict[str, dict[str, list]] = {}
+        for ss in chanlun_data.get("chanlun_sell_stocks", []):
+            freq = ss.get("frequency", "30分钟")
+            st = ss.get("sell_type", "其他")
+            freq_sell_groups.setdefault(freq, {}).setdefault(st, []).append(ss)
+
+        sell_type_map = {"1S": "一卖", "2S": "二卖", "3S": "三卖"}
+        for freq in ["30分钟", "60分钟"]:
+            sell_groups = freq_sell_groups.get(freq, {})
+            for st_code, st_cn in sell_type_map.items():
+                stocks = sell_groups.get(st_code, [])
+                if stocks:
+                    top_n = min(len(stocks), 10)
+                    chanlun_tab_children.append({
+                        "key": f"chanlun_{freq}_{st_code}",
+                        "label": f"{freq}·缠论{st_cn}",
+                        "subgroup": "卖点",
+                        "count": top_n,
+                    })
+                    for ss in stocks[:top_n]:
+                        code = ss["code"]
+                        if code not in picked_codes:
+                            picked_codes.add(code)
+                            final_stocks.append({
+                                "code": code,
+                                "name": ss.get("name", ""),
+                                "price": ss.get("price"),
+                                "pct": None,
+                                "industry": "",
+                                "marketCap": None,
+                                "concept": "",
+                                "strategy": f"{freq}缠论{st_cn}",
+                                "strategyCount": 0,
+                                "strategyTypes": [{"group": "缠论选股", "groupKey": "chanlun", "name": f"{freq}缠论{st_cn}"}],
                                 "limitUpStatus": "",
                                 "mlScore": None,
                                 "mlModel": "",
@@ -1474,9 +1578,6 @@ def main():
     # 2. ML 扫描
     ml_results = run_ml_scan_all_pkls()
 
-    # 3. 合并
-    summary_file = build_summary_excel(signal_file, ml_results)
-
     # 3.3 板块热度 / 资金流向 / 连板天梯（盘前数据准备）
     if args.skip_pregame:
         print("\n⏭️ 跳过盘前数据准备（--skip-pregame）")
@@ -1485,6 +1586,9 @@ def main():
 
     # 3.35 缠论选股 + 指数/个股背离（盘后分钟级分析）
     chanlun_data = run_chanlun_divergence_scan()
+
+    # 3. 合并汇总（包含所有策略/ML/缠论/背离）
+    summary_file = build_summary_excel(signal_file, ml_results, chanlun_data=chanlun_data)
 
     # 3.4 市场环境评估（板块热度标签）
     run_market_context()

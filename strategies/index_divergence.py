@@ -80,13 +80,15 @@ class _DivergenceAccessor:
 def check_single_index_divergence(
     index_key: str,
     lookback_bars: int = 60,
+    frequency: str = "30",
 ) -> dict:
     """
-    检测单个指数的30分钟底背离。
+    检测单个指数的分钟级底背离。
 
     Args:
         index_key: "SH000001" / "SZ399001" / "SZ399006" / "SH000688"
         lookback_bars: 回溯K线数
+        frequency: K线周期，"30" 或 "60"
 
     Returns:
         {
@@ -105,7 +107,7 @@ def check_single_index_divergence(
     name = info.get("name", index_key)
 
     # 加载数据
-    df = _load_index_minute(index_key, "30")
+    df = _load_index_minute(index_key, frequency)
     if df is None or df.empty:
         return {
             "index_key": index_key, "index_name": name,
@@ -181,23 +183,37 @@ def market_bottom_signal(results: Dict[str, dict]) -> Tuple[bool, str]:
     综合判断市场底部信号。
 
     规则：
-    - ≥2个指数出现底背离 → 强底部信号
-    - 1个指数出现底背离 → 弱底部信号
+    - ≥3个指数出现背离 → 强底部信号
+    - ≥2个指数出现背离 → 中等底部信号
+    - ≥1个指数出现背离 → 弱底部信号
     - 0个 → 无信号
 
     Returns:
         (是否有底部信号, 信号描述)
     """
-    div_count = sum(1 for r in results.values() if r.get("bottom_divergence"))
-    gc_div_count = sum(1 for r in results.values() if r.get("golden_cross_divergence"))
-    total_div = div_count + gc_div_count
+    # 按指数计数：一个指数只要出现任一种背离就算1个
+    div_idx_count = sum(1 for r in results.values() if r.get("bottom_divergence"))
+    gc_idx_count = sum(1 for r in results.values() if r.get("golden_cross_divergence"))
+    # 去重：同一个指数可能同时有底背离+金叉背离，只算一次
+    affected_indices = sum(
+        1 for r in results.values()
+        if r.get("bottom_divergence") or r.get("golden_cross_divergence")
+    )
 
-    if total_div >= 3:
-        return True, f"🔴 强底部信号: {total_div}个指数出现底背离"
-    elif total_div >= 2:
-        return True, f"🟡 中等底部信号: {total_div}个指数出现底背离"
-    elif total_div >= 1:
-        return True, f"🟢 弱底部信号: {total_div}个指数出现底背离"
+    # 拼接描述
+    parts = []
+    if div_idx_count > 0:
+        parts.append(f"{div_idx_count}个DIF底背离")
+    if gc_idx_count > 0:
+        parts.append(f"{gc_idx_count}个金叉背离")
+    detail = "，".join(parts) if parts else "无"
+
+    if affected_indices >= 3:
+        return True, f"🔴 强底部信号: {affected_indices}个指数（{detail}）"
+    elif affected_indices >= 2:
+        return True, f"🟡 中等底部信号: {affected_indices}个指数（{detail}）"
+    elif affected_indices >= 1:
+        return True, f"🟢 弱底部信号: {affected_indices}个指数（{detail}）"
     else:
         return False, "无底部信号"
 

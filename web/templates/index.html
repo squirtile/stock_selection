@@ -21,6 +21,7 @@ a{text-decoration:none;color:inherit}
 .status-row .right{display:flex;align-items:center;gap:10px;font-size:12px;color:#666}
 .status-row .refresh{font-size:16px;cursor:pointer;transition:transform .4s}
 .status-row .refresh:hover{transform:rotate(180deg)}
+.update-tip{background:#fefce8;border:1px solid #fde68a;border-radius:8px;padding:7px 14px;font-size:11px;color:#92400e;text-align:center;margin-bottom:10px}
 .main-tabs{display:flex;background:#fff;border-radius:10px;padding:3px;margin-bottom:14px;gap:2px}
 .main-tab{flex:1;text-align:center;padding:10px 0;border-radius:8px;font-size:13px;font-weight:500;color:#888;cursor:pointer;transition:all .2s;user-select:none}
 .main-tab.active{background:#4f6ef6;color:#fff;font-weight:600;box-shadow:0 2px 8px rgba(79,110,246,.25)}
@@ -35,9 +36,10 @@ a{text-decoration:none;color:inherit}
 .sub-chip.active{background:#22c55e;color:#fff;border-color:#22c55e;box-shadow:0 2px 6px rgba(34,197,94,.2)}
 .sub-chip .badge{font-size:10px;background:rgba(0,0,0,.04);padding:1px 6px;border-radius:6px}
 .sub-chip.active .badge{background:rgba(255,255,255,.2)}
+.subgroup-label{display:inline-flex;align-items:center;font-size:11px;font-weight:700;color:#1a1a2e;padding:4px 10px 4px 0;margin-left:2px;white-space:nowrap}
 .market-tag{display:inline-flex;align-items:center;gap:8px;padding:8px 20px;border-radius:14px;font-size:16px;font-weight:700;color:#fff;margin-bottom:12px;letter-spacing:1px}
-.market-tag.bull{background:linear-gradient(135deg,#ef4444,#dc2626);box-shadow:0 2px 8px rgba(239,68,68,.3)}
-.market-tag.bear{background:linear-gradient(135deg,#22c55e,#16a34a);box-shadow:0 2px 8px rgba(34,197,94,.3)}
+.market-tag.bull,.market-tag.bullish{background:linear-gradient(135deg,#ef4444,#dc2626);box-shadow:0 2px 8px rgba(239,68,68,.3)}
+.market-tag.bear,.market-tag.bearish{background:linear-gradient(135deg,#22c55e,#16a34a);box-shadow:0 2px 8px rgba(34,197,94,.3)}
 .market-tag.neutral{background:linear-gradient(135deg,#f59e0b,#d97706);box-shadow:0 2px 8px rgba(245,158,11,.3)}
 .stock-list{display:flex;flex-direction:column;gap:8px}
 .stock-card{background:#fff;border-radius:10px;padding:12px 14px;display:flex;align-items:center;gap:10px;cursor:pointer;transition:box-shadow .2s;border:1px solid #f0f0f0}
@@ -168,10 +170,11 @@ a{text-decoration:none;color:inherit}
 <div class="container">
 <div class="hero"><h1>📋 <span>市场数据</span>观察日志</h1><p>个人量化研究记录 · 仅供学习参考</p></div>
 <div class="status-row"><div class="time"><i></i>{% if marketContext and marketContext.tradeDate %}数据日期 {{ marketContext.tradeDate[:4] }}-{{ marketContext.tradeDate[4:6] }}-{{ marketContext.tradeDate[6:8] }}{% else %}{{ time }}{% endif %}</div><div class="right"><span>共 {{ total }} 只</span><a class="refresh" href="/">🔄</a></div></div>
+<div class="update-tip">⏰ 每日 18:30 盘后数据更新，届时请刷新页面查看最新结果</div>
 <div class="main-tabs" id="mainTabs">
 <div class="main-tab active" data-tab="money"><span class="icon">💰</span>资金动向</div>
 <div class="main-tab" data-tab="sector"><span class="icon">🔥</span>板块热度</div>
-<div class="main-tab" data-tab="ladder"><span class="icon">🪜</span>连板天梯</div>
+<div class="main-tab" data-tab="ladder"><span class="icon">🚀</span>连板天梯</div>
 <div class="main-tab" data-tab="strategies"><span class="icon">📊</span>策略扫描</div>
 </div>
 <!-- ===== 资金动向（默认首页） ===== -->
@@ -190,7 +193,12 @@ a{text-decoration:none;color:inherit}
 <div id="panel-strategies" class="tab-panel" style="display:none">
 {% if marketContext %}<span class="market-tag {{ marketContext.trend }}">{{ marketContext.label or '📊 震荡' }} {{ marketContext.tradeDate or '' }}</span>{% endif %}
 <div class="filter-row" id="level1Tabs">{% for g in tabGroups %}<div class="filter-chip{% if loop.first %} active{% endif %}" data-key="{{ g.key }}">{{ g.label }}<span class="badge">{{ g.count }}</span></div>{% endfor %}</div>
-<div class="sub-filter-row" id="level2Tabs">{% for g in tabGroups %}<div class="sub-group" data-parent="{{ g.key }}"{% if not loop.first %} style="display:none"{% endif %}>{% for child in g.children %}<div class="sub-chip" data-key="{{ child.key }}" data-parent="{{ g.key }}">{{ child.label }}<span class="badge">{{ child.count }}</span></div>{% endfor %}</div>{% endfor %}</div>
+<!-- 缠论二级子标签（买点/卖点），仅选中缠论选股时显示 -->
+<div id="chanlunSubtabs" class="money-subtabs" style="display:none">
+<div class="money-subtab active" data-ctab="buy">买点</div>
+<div class="money-subtab" data-ctab="sell">卖点</div>
+</div>
+<div class="sub-filter-row" id="level2Tabs">{% for g in tabGroups %}<div class="sub-group" data-parent="{{ g.key }}"{% if not loop.first %} style="display:none"{% endif %}>{% if g.key == '缠论选股' %}{% set buy_chips = g.children|selectattr('subgroup', 'equalto', '买点')|list %}{% set sell_chips = g.children|selectattr('subgroup', 'equalto', '卖点')|list %}<div class="chanlun-chip-group" data-ctab="buy">{% for child in buy_chips %}<div class="sub-chip" data-key="{{ child.key }}" data-parent="{{ g.key }}">{{ child.label }}<span class="badge">{{ child.count }}</span></div>{% endfor %}</div><div class="chanlun-chip-group" data-ctab="sell" style="display:none">{% for child in sell_chips %}<div class="sub-chip" data-key="{{ child.key }}" data-parent="{{ g.key }}">{{ child.label }}<span class="badge">{{ child.count }}</span></div>{% endfor %}</div>{% else %}{% for child in g.children %}<div class="sub-chip" data-key="{{ child.key }}" data-parent="{{ g.key }}">{{ child.label }}<span class="badge">{{ child.count }}</span></div>{% endfor %}{% endif %}</div>{% endfor %}</div>
 <div class="stock-list" id="stockList">
 {% for s in stocks %}
 <div class="stock-card" data-code="{{ s.code }}" data-categories='{{ s.categories|tojson }}' data-strategytypes='{{ s.strategyTypes|tojson }}' data-mlmodels='{{ s.mlModels|tojson }}' data-score="{{ s.score }}" onclick="toggleKline(this)">
@@ -209,7 +217,7 @@ a{text-decoration:none;color:inherit}
 <div class="footer">以上内容仅供个人研究参考，不构成投资建议</div>
 </div>
 <!-- ===== 连板天梯 ===== -->
-<div id="panel-ladder" class="tab-panel" style="display:none"><div id="ladderContent"><div class="empty"><div class="icon">🪜</div><div class="text">加载中…</div></div></div></div>
+<div id="panel-ladder" class="tab-panel" style="display:none"><div id="ladderContent"><div class="empty"><div class="icon">🚀</div><div class="text">加载中…</div></div></div></div>
 <!-- ===== 板块热度 ===== -->
 <div id="panel-sector" class="tab-panel" style="display:none"><div id="sectorContent"><div class="empty"><div class="icon">🔥</div><div class="text">加载中…</div></div></div></div>
 </div>
@@ -249,6 +257,8 @@ loadMoney();window._md=1;
 document.querySelectorAll('#moneySubtabs .money-subtab').forEach(st=>{st.addEventListener('click',function(){
 document.querySelectorAll('#moneySubtabs .money-subtab').forEach(t=>t.classList.remove('active'));this.classList.add('active');
 renderMoneyView(this.dataset.mtab);
+// 底背离只在大盘子标签下显示
+document.getElementById('indexDivergenceArea').style.display=this.dataset.mtab==='market'?'':'none';
 })});
 window._moneySort='net';window._moneySortDir='desc'; // 默认按资金净额从高到低
 
@@ -335,6 +345,11 @@ if(k==='sector'&&!window._sd){loadSector();window._sd=1}
     const firstGroup=document.querySelector('#level1Tabs .filter-chip.active');
     if(!firstGroup)return;
     const key=firstGroup.dataset.key;
+    // 缠论选股需要处理二级子标签
+    if(key==='缠论选股'){
+        document.getElementById('chanlunSubtabs').style.display='';
+        chanlunSelectFirstChip();
+    }
     const grp=document.querySelector('#level2Tabs .sub-group[data-parent="'+key+'"]');
     if(!grp)return;
     const firstSub=grp.querySelector('.sub-chip');
@@ -343,17 +358,63 @@ if(k==='sector'&&!window._sd){loadSector();window._sd=1}
     filterStocks(key,firstSub.dataset.key);
 })();
 
+// === 缠论子标签：选中第一个可用的三级芯片 ===
+function chanlunSelectFirstChip(){
+    const activeCTab=document.querySelector('#chanlunSubtabs .money-subtab.active');
+    const ctab=activeCTab?activeCTab.dataset.ctab:'buy';
+    const grp=document.querySelector('#level2Tabs .sub-group[data-parent="缠论选股"]');
+    if(!grp)return;
+    const chipGrp=grp.querySelector('.chanlun-chip-group[data-ctab="'+ctab+'"]');
+    if(!chipGrp)return;
+    const firstSub=chipGrp.querySelector('.sub-chip');
+    if(firstSub){firstSub.classList.add('active');filterStocks('缠论选股',firstSub.dataset.key)}
+    else{filterStocks('缠论选股','')}
+}
+
+// === 缠论子标签（买点/卖点）切换 ===
+document.querySelectorAll('#chanlunSubtabs .money-subtab').forEach(st=>{st.addEventListener('click',function(){
+document.querySelectorAll('#chanlunSubtabs .money-subtab').forEach(t=>t.classList.remove('active'));this.classList.add('active');
+const ctab=this.dataset.ctab;
+// 切换三级芯片显示
+const grp=document.querySelector('#level2Tabs .sub-group[data-parent="缠论选股"]');
+if(grp){
+    grp.querySelectorAll('.chanlun-chip-group').forEach(g=>g.style.display='none');
+    const chipGrp=grp.querySelector('.chanlun-chip-group[data-ctab="'+ctab+'"]');
+    if(chipGrp)chipGrp.style.display='';
+}
+// 清除旧选中，选第一个
+grp.querySelectorAll('.sub-chip').forEach(c=>c.classList.remove('active'));
+const visibleGrp=grp.querySelector('.chanlun-chip-group[data-ctab="'+ctab+'"]');
+const firstSub=visibleGrp?visibleGrp.querySelector('.sub-chip'):null;
+if(firstSub){firstSub.classList.add('active');filterStocks('缠论选股',firstSub.dataset.key)}
+else{filterStocks('缠论选股','')}
+})});
+
 // === 一级筛选 ===
 document.querySelectorAll('#level1Tabs .filter-chip').forEach(chip=>{chip.addEventListener('click',function(){
 document.querySelectorAll('#level1Tabs .filter-chip').forEach(c=>c.classList.remove('active'));this.classList.add('active');
 document.querySelectorAll('#level2Tabs .sub-chip').forEach(c=>c.classList.remove('active'));
 const key=this.dataset.key;
+// 显示/隐藏缠论二级子标签
+document.getElementById('chanlunSubtabs').style.display=key==='缠论选股'?'':'none';
 document.querySelectorAll('#level2Tabs .sub-group').forEach(g=>g.style.display='none');
 const grp=document.querySelector('#level2Tabs .sub-group[data-parent="'+key+'"]');
 if(!grp)return;grp.style.display='';
-const firstSub=grp.querySelector('.sub-chip');
-if(firstSub){firstSub.classList.add('active');filterStocks(key,firstSub.dataset.key)}
-else{filterStocks(key,'')}
+if(key==='缠论选股'){
+    // 重置缠论子标签为买点
+    document.querySelectorAll('#chanlunSubtabs .money-subtab').forEach(t=>t.classList.remove('active'));
+    document.querySelector('#chanlunSubtabs .money-subtab[data-ctab="buy"]').classList.add('active');
+    grp.querySelectorAll('.chanlun-chip-group').forEach(g=>g.style.display='none');
+    const buyGrp=grp.querySelector('.chanlun-chip-group[data-ctab="buy"]');
+    if(buyGrp)buyGrp.style.display='';
+    const firstSub=buyGrp?buyGrp.querySelector('.sub-chip'):null;
+    if(firstSub){firstSub.classList.add('active');filterStocks(key,firstSub.dataset.key)}
+    else{filterStocks(key,'')}
+}else{
+    const firstSub=grp.querySelector('.sub-chip');
+    if(firstSub){firstSub.classList.add('active');filterStocks(key,firstSub.dataset.key)}
+    else{filterStocks(key,'')}
+}
 })});
 
 // === 二级筛选 ===
@@ -447,7 +508,7 @@ function drawKline(code,klines,imgEl){
 }
 
 // === 连板天梯 ===
-function loadLadder(){fetch('/api/ladder').then(r=>r.json()).then(data=>{const c=document.getElementById('ladderContent');if(!data.success||!data.dates||!data.dates.length){c.innerHTML='<div class="empty"><div class="icon">🪜</div><div class="text">暂无连板数据</div></div>';return}let ad=null,ad2=null;for(const d of data.dates){const ld=data.data[d];if(ld&&ld.ladder&&ld.ladder.length){ad=d;ad2=ld;break}}if(!ad2){c.innerHTML='<div class="empty"><div class="icon">🪜</div><div class="text">暂无连板数据</div><div class="hint">盘前尚未生成，请收盘后查看</div></div>';return}window._ldata=data;window._ldate=ad;renderLadder(ad,ad2)}).catch(()=>{document.getElementById('ladderContent').innerHTML='<div class="empty"><div class="icon">⚠️</div><div class="text">加载失败</div></div>'})}
+function loadLadder(){fetch('/api/ladder').then(r=>r.json()).then(data=>{const c=document.getElementById('ladderContent');if(!data.success||!data.dates||!data.dates.length){c.innerHTML='<div class="empty"><div class="icon">🚀</div><div class="text">暂无连板数据</div></div>';return}let ad=null,ad2=null;for(const d of data.dates){const ld=data.data[d];if(ld&&ld.ladder&&ld.ladder.length){ad=d;ad2=ld;break}}if(!ad2){c.innerHTML='<div class="empty"><div class="icon">🪜</div><div class="text">暂无连板数据</div><div class="hint">盘前尚未生成，请收盘后查看</div></div>';return}window._ldata=data;window._ldate=ad;renderLadder(ad,ad2)}).catch(()=>{document.getElementById('ladderContent').innerHTML='<div class="empty"><div class="icon">⚠️</div><div class="text">加载失败</div></div>'})}
 function renderLadder(date,ld){const data=window._ldata,c=document.getElementById('ladderContent');let h='<div class="date-pills"><span class="label">日期</span>';data.dates.forEach(d=>{const has=data.data[d]&&data.data[d].ladder&&data.data[d].ladder.length;h+='<span class="date-pill'+(d===date?' active':'')+'" onclick="switchLadder(\''+d+'\')">'+d+(has?' · '+data.data[d].total+'只':'')+'</span>'});const bgMap={1:'#fef5e7',2:'#d0e4f5',3:'#c8ecdf',4:'#ffe9a0',5:'#ffe0c0',6:'#ffd4b0',7:'#ffc8c8',8:'#ffb8b8',9:'#e8c8f5',10:'#d0d4d8',11:'#d0d4d8',12:'#d0d4d8'};const fcMap={1:'#6b5030',2:'#155a85',3:'#145e4f',4:'#7a6400',5:'#c04a00',6:'#b54008',7:'#a93226',8:'#8b1611',9:'#6b2f82',10:'#0f1923',11:'#0f1923',12:'#0f1923'};h+='</div><table class="data-table"><thead><tr><th>连板</th><th>股票</th><th>代码</th></tr></thead><tbody>';ld.ladder.forEach(item=>{const lv=item.nums>12?12:item.nums;const bg=bgMap[lv]||'#fff',fc=fcMap[lv]||'#222';(item.stocks||[]).forEach((s,i)=>{h+='<tr style="background:'+bg+(i===0?';border-top:2px solid #d0d0d0':'')+'">';if(i===0)h+='<td rowspan="'+item.stocks.length+'" style="vertical-align:middle;text-align:center"><span class="board-badge board-lv'+lv+'">'+item.nums+'</span><div style="font-size:12px;color:#888;margin-top:3px;font-weight:600">'+item.stocks.length+'只</div></td>';h+='<td style="color:'+fc+';font-weight:600;font-size:15px">'+s.name+'</td><td style="font-size:15px;color:'+fc+';font-weight:600">'+(s.ts_code||'').replace('.SH','').replace('.SZ','')+'</td></tr>'})});h+='</tbody></table>';c.innerHTML=h}
 function switchLadder(d){const data=window._ldata;if(!data)return;const ld=data.data[d];if(ld&&ld.ladder&&ld.ladder.length){window._ldate=d;renderLadder(d,ld)}}
 

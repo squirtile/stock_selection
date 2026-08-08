@@ -16,7 +16,7 @@ import pandas as pd
 import numpy as np
 
 from .structures import (
-    Stroke, Segment, Pivot, TrendAnalysis, BuyPoint, ChanlunContext,
+    Stroke, Segment, Pivot, TrendAnalysis, BuyPoint, SellPoint, ChanlunContext,
 )
 from .identify import analyze
 from .utils import find_bottom_divergence
@@ -311,3 +311,263 @@ def detect_all_buy_points(
 
     ctx.buy_points = buy_points
     return ctx, buy_points
+
+
+# ══════════════════════════════════════════════════════════════════
+# 卖点检测（与买点镜像对称）
+# ══════════════════════════════════════════════════════════════════
+
+def detect_first_sell(
+    ctx: ChanlunContext,
+    divergence_ratio: float = 0.85,
+    volume_multiplier: float = 1.20,
+) -> Optional[SellPoint]:
+    """
+    检测一卖（顶背驰反转）。
+
+    条件（与一买镜像）：
+    1. 存在至少2段上涨笔
+    2. 后一段创新高但 MACD 面积 ≤ 前一段 × divergence_ratio（顶背驰）
+    3. 价格跌破 MA5
+    4. 跌破前6根K线低点
+    5. 放量确认
+    """
+    raw = ctx.df_raw
+    strokes = ctx.strokes
+    if raw is None or len(raw) < 80 or len(strokes) < 2:
+        return None
+
+    up_strokes = [s for s in strokes if s.direction == "up"]
+    if len(up_strokes) < 2:
+        return None
+
+    prev_up = up_strokes[-2]
+    last_up = up_strokes[-1]
+
+    # 价格新高
+    if last_up.high <= prev_up.high * 1.005:
+        return None
+
+    # MACD面积顶背驰（力竭）
+    macd_weaker = last_up.macd_area <= prev_up.macd_area * divergence_ratio
+    if not macd_weaker:
+        return None
+
+    # 回落确认
+    latest = raw.iloc[-1]
+    if pd.isna(latest.get("MA5")) or pd.isna(latest.get("MA10")):
+        return None
+
+    # 跌破 MA5
+    if latest["收盘"] >= latest["MA5"]:
+        return None
+
+    # MA5 <= MA10（短期趋势转弱）
+    if latest["MA5"] > latest["MA10"] * 1.002:
+        return None
+
+    # 跌破前6根低点
+    recent_6_low = raw["最低"].shift(1).rolling(6).min().iloc[-1]
+    if pd.isna(recent_6_low) or latest["收盘"] >= recent_6_low:
+        return None
+
+    # 放量
+    vol20 = latest.get("VOL20")
+    if pd.isna(vol20) or vol20 <= 0 or latest["成交量"] < vol20 * volume_multiplier:
+        return None
+
+    confidence = 0.60
+    if macd_weaker and last_up.macd_area <= prev_up.macd_area * 0.5:
+        confidence = 0.80
+
+    return SellPoint(
+        type="1S",
+        index=len(raw) - 1,
+        time=latest.get("datetime"),
+        price=float(latest["收盘"]),
+        confidence=confidence,
+        reason=f"顶背驰: MACD面积 {last_up.macd_area:.1f}↓ vs {prev_up.macd_area:.1f}",
+    )
+
+
+def detect_second_sell(
+    ctx: ChanlunContext,
+    high_tolerance: float = 0.005,
+    volume_multiplier: float = 1.20,
+) -> Optional[SellPoint]:
+    """
+    检测二卖（反弹不创新高）。
+
+    条件（与二买镜像）：
+    1. 存在至少4笔
+    2. 最近30根高点 ≤ 前30根高点（未创新高）
+    3. 价格跌破 MA5
+    4. 跌破前一根K线低点
+    5. 放量
+    6. 最后一笔方向向下
+    """
+    raw = ctx.df_raw
+    strokes = ctx.strokes
+    if raw is None or len(raw) < 70 or len(strokes) < 4:
+        return None
+
+    # 价格未创新高
+    recent_high = float(raw["最高"].iloc[-30:].max())
+    prior_high = float(raw["最高"].iloc[-60:-30].max()) if len(raw) >= 60 else float(raw["最高"].iloc[:-30].max())
+    if recent_high > prior_high * (1 + high_tolerance):
+        return None
+
+    # 跌破MA5
+    latest = raw.iloc[-1]
+    if pd.isna(latest.get("MA5")) or latest["收盘"] >= latest["MA5"]:
+        return None
+
+    # 跌破前一根低点
+    prev = raw.iloc[-2]
+    if latest["收盘"] >= prev["最低"]:
+        return None
+
+    # 放量
+    vol20 = latest.get("VOL20")
+    if pd.isna(vol20) or vol20 <= 0 or latest["成交量"] < vol20 * volume_multiplier:
+        return None
+
+    # 最后一笔向下
+    if strokes[-1].direction != "down":
+        return None
+
+    confidence = 0.75
+
+    return SellPoint(
+        type="2S",
+        index=len(raw) - 1,
+        time=latest.get("datetime"),
+        price=float(latest["收盘"]),
+        confidence=confidence,
+        reason=f"反弹不创新高: 近30高{recent_high:.2f} ≤ 前高{prior_high:.2f}",
+    )
+
+
+def detect_third_sell(
+    ctx: ChanlunContext,
+    rally_tolerance: float = 0.01,
+    breakdown_pct: float = 0.015,
+    volume_multiplier: float = 1.15,
+) -> Optional[SellPoint]:
+    """
+    检测三卖（中枢下方反弹确认）。
+
+    条件（与三买镜像）：
+    1. 存在中枢
+    2. 中枢后价格曾跌破中枢下沿
+    3. 当前反弹最高 ≤ 中枢下沿 × (1 + tolerance)（未站回中枢）
+    4. MA5 < MA10 < MA20（空头排列）
+    5. 跌破MA5且跌破前6根低点
+    6. 放量
+    """
+    raw = ctx.df_raw
+    pivots = ctx.pivots
+    if raw is None or len(raw) < 80 or not pivots:
+        return None
+
+    pivot = pivots[-1]
+
+    if not ctx.strokes:
+        return None
+    last_seg = pivot.segments[-1] if pivot.segments else None
+    if last_seg is None or not last_seg.strokes:
+        return None
+    end_k_idx = last_seg.strokes[-1].end_index
+
+    if end_k_idx + 5 >= len(raw):
+        return None
+
+    after_pivot = raw.iloc[end_k_idx + 1:].copy()
+    if after_pivot.empty or len(after_pivot) < 5:
+        return None
+
+    after_low = float(after_pivot["最低"].min())
+    latest = raw.iloc[-1]
+    latest_high = float(latest["最高"])
+
+    # 曾跌破中枢下沿
+    if after_low >= pivot.zd * (1 - breakdown_pct):
+        return None
+
+    # 反弹未站回中枢
+    if latest_high > pivot.zd * (1 + rally_tolerance):
+        return None
+
+    # MA空头排列
+    if pd.isna(latest.get("MA5")) or pd.isna(latest.get("MA10")) or pd.isna(latest.get("MA20")):
+        return None
+    if not (latest["MA5"] < latest["MA10"] < latest["MA20"]):
+        return None
+
+    # 跌破MA5
+    if latest["收盘"] >= latest["MA5"]:
+        return None
+
+    # 跌破前6根低点
+    recent_6_low = raw["最低"].shift(1).rolling(6).min().iloc[-1]
+    if pd.isna(recent_6_low) or latest["收盘"] >= recent_6_low:
+        return None
+
+    # 放量
+    vol20 = latest.get("VOL20")
+    if pd.isna(vol20) or vol20 <= 0 or latest["成交量"] < vol20 * volume_multiplier:
+        return None
+
+    confidence = 0.85
+
+    return SellPoint(
+        type="3S",
+        index=len(raw) - 1,
+        time=latest.get("datetime"),
+        price=float(latest["收盘"]),
+        pivot=pivot,
+        confidence=confidence,
+        reason=f"三卖: 中枢下沿{pivot.zd:.1f}, 反弹高{latest_high:.1f}, 跌破低{after_low:.1f}",
+    )
+
+
+# ══════════════════════════════════════════════════════════════════
+# 一键检测所有卖点
+# ══════════════════════════════════════════════════════════════════
+
+def detect_all_sell_points(
+    df30: pd.DataFrame,
+    enable_1s: bool = True,
+    enable_2s: bool = True,
+    enable_3s: bool = True,
+) -> Tuple[ChanlunContext, List[SellPoint]]:
+    """
+    一键检测30分钟级别的所有缠论卖点。
+
+    Args:
+        df30: K线 DataFrame
+        enable_1s/2s/3s: 开关
+
+    Returns:
+        (缠论上下文, 卖点列表)
+    """
+    ctx = analyze(df30)
+    sell_points: List[SellPoint] = []
+
+    if enable_1s:
+        sp = detect_first_sell(ctx)
+        if sp:
+            sell_points.append(sp)
+
+    if enable_2s:
+        sp = detect_second_sell(ctx)
+        if sp:
+            sell_points.append(sp)
+
+    if enable_3s:
+        sp = detect_third_sell(ctx)
+        if sp:
+            sell_points.append(sp)
+
+    ctx.sell_points = sell_points
+    return ctx, sell_points

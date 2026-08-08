@@ -29,6 +29,7 @@ from .structures import (
     Pivot,
     TrendAnalysis,
     BuyPoint,
+    SellPoint,
     ChanlunContext,
 )
 
@@ -47,6 +48,10 @@ from .buypoints import (
     detect_second_buy,
     detect_third_buy,
     detect_all_buy_points,
+    detect_first_sell,
+    detect_second_sell,
+    detect_third_sell,
+    detect_all_sell_points,
 )
 
 from .utils import (
@@ -59,13 +64,15 @@ from .utils import (
 __all__ = [
     # 数据结构
     "Fractal", "Stroke", "Segment", "Pivot",
-    "TrendAnalysis", "BuyPoint", "ChanlunContext",
+    "TrendAnalysis", "BuyPoint", "SellPoint", "ChanlunContext",
     # 识别引擎
     "process_inclusion", "find_fractals", "build_strokes",
     "build_segments", "find_pivots", "classify_trend", "analyze",
     # 买卖点
     "detect_first_buy", "detect_second_buy", "detect_third_buy",
     "detect_all_buy_points",
+    "detect_first_sell", "detect_second_sell", "detect_third_sell",
+    "detect_all_sell_points",
     # 工具
     "prepare_data", "find_bottom_divergence",
     "find_macd_golden_cross_divergence", "calc_volume_profile",
