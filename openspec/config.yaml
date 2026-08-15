@@ -1,0 +1,35 @@
+schema: spec-driven
+
+# Project context (optional)
+# This is shown to AI when creating artifacts.
+# Add your tech stack, conventions, style guides, domain knowledge, etc.
+context: |
+  Tech stack: Python 3.10, pandas, numpy, scikit-learn, baostock, tushare, akshare
+  Domain: A股 (China A-share) 选股 + 策略扫描 + 回测系统
+  Key modules: strategy.py (日线策略引擎), minute_strategy.py (分钟B点确认, 飞书推送),
+    realtime_strategy.py (实时盘中扫描), strategies/ (模块化策略包: base/daily/minute/chanlun/registry),
+    backtest/ (日线+分钟回测), ml_engine/ (ML形态匹配: pattern_extract/ml_classifier/similarity/runner/eval)
+  Docs: CLAUDE.md (项目总览), ML引擎使用指南.md, 策略模块化说明.md
+  Conventions: 命令行入口在 cli/ 下 (python cli/ml_match.py --code 000009); 配置文件 config.py (Tushare token 不入库)
+
+# Per-artifact rules (optional)
+# Add custom rules for specific artifacts.
+# Example:
+#   rules:
+#     proposal:
+#       - Keep proposals under 500 words
+#       - Always include a "Non-goals" section
+#     tasks:
+#       - Break tasks into chunks of max 2 hours
+
+# Per-operation guidance (optional)
+# Add advisory guidance for how apply and archive work should be conducted.
+# This is separate from artifact rules above.
+# Example:
+#   operations:
+#     apply:
+#       guidance:
+#         - Keep test summaries concise
+#     archive:
+#       guidance:
+#         - Summarize the archive outcome before finishing

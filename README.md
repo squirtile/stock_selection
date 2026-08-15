@@ -788,3 +788,38 @@ datetime、开盘、最高、最低、收盘、成交量、成交额
 ```
 
 就可以继续复用现有 30分钟、5分钟、缠论和1分钟策略。
+
+## 十七、OpenSpec 规范驱动开发
+
+本项目已集成 [OpenSpec](https://github.com/Fission-AI/OpenSpec)（规范驱动开发，Spec-driven Development）。开发前先写规格（spec），AI 按规格实现，避免"改了又改"。
+
+### 目录结构
+
+| 路径 | 用途 |
+|------|------|
+| `openspec/config.yaml` | OpenSpec 配置 + 项目上下文（喂给 AI 的技术栈/模块说明） |
+| `openspec/specs/` | 主规格（归档后生成，事实来源） |
+| `openspec/changes/` | 变更提案（proposal / specs 增量 / design / tasks） |
+| `openspec/changes/archive/` | 已归档的变更 |
+| `.openspec-cli/` | 本地固定的 CLI 安装（已 gitignore，非项目依赖） |
+| `.claude/commands/opsx/` | Claude Code 斜杠命令 `/opsx:propose` 等 |
+| `.claude/skills/` | OpenSpec 工作流技能（propose/apply/archive/sync/…） |
+
+### 使用流程（推荐用 Claude Code）
+
+1. **提出变更**：`/opsx:propose 你的想法` → 生成 proposal、specs 增量、design、tasks
+2. **评审**：人工确认规格无误
+3. **实现**：`/opsx:apply 变更名` → AI 按 tasks 实现，改完归档
+4. **归档**：`/opsx:archive 变更名` → 增量合并进 `openspec/specs/` 主规格
+
+### 命令行方式
+
+```bash
+openspec --version                # CLI 已全局安装 (/usr/bin/openspec)
+openspec list --specs             # 查看已有规格
+openspec new change "<变更名>"     # 手动创建变更
+openspec validate                 # 校验变更与规格
+openspec view                     # 交互式仪表盘
+```
+
+> 说明：CLI 全局安装版本可能与 `.openspec-cli/` 内固定的本地版本不同；以全局为准，本地副本用于版本锁定。
