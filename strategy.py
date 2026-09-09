@@ -1087,10 +1087,299 @@ def prepare_hist_data(df: pd.DataFrame) -> pd.DataFrame:
         df["涨跌幅"] >= 9.95
     ).rolling(60, min_periods=30).sum()
 
+    # =====================================================================
+    # 新策略指标：回踩缺口不破 / 假突破2B / 创五年新高
+    # =====================================================================
+    _compute_gap_touch_indicator(df)
+    _compute_bullish_2b_indicator(df)
+    _compute_long_term_breakout_indicator(df)
+    _compute_long_shadow_indicator(df)
+
     # 合并碎片化的 DataFrame，消除 PerformanceWarning
     df = df.copy()
 
     return df
+
+
+# ---------------------------------------------------------------------------
+# 回踩缺口不破 指标计算
+# ---------------------------------------------------------------------------
+
+def _compute_gap_touch_indicator(df: pd.DataFrame):
+    """为每行计算：最近向上缺口是否被回踩触及但未补掉。
+
+    添加列：
+      - 缺口回踩: bool
+      - 缺口日期: str
+      - 缺口下沿: float
+    """
+    n = len(df)
+    flags = [False] * n
+    gap_dates = [""] * n
+    gap_lows_val = [0.0] * n
+
+    closes = df["收盘"].values
+    highs = df["最高"].values
+    lows = df["最低"].values
+    dates = df["日期"].astype(str).values
+
+    for i in range(2, n):
+        if pd.isna(closes[i]) or closes[i] <= 0:
+            continue
+        # MA120
+        if i >= 120:
+            ma120 = float(np.mean(closes[i - 119:i + 1]))
+            if closes[i] < ma120:
+                continue
+
+        today_low = lows[i]
+        low_price = today_low
+        found = False
+        for j in range(i - 1, -1, -1):
+            if j + 1 >= n:
+                continue
+            low_price = min(low_price, lows[j + 1])
+            high_j = highs[j]
+            low_j1 = lows[j + 1]
+            if low_j1 > high_j and high_j < today_low and high_j < low_price:
+                gap_low = min(low_j1, low_price)
+                gap_days = i - (j + 1)
+                if gap_days >= 5 and (today_low - gap_low) / today_low < 0.02:  # 2%以内视为触及
+                    flags[i] = True
+                    gap_dates[i] = str(dates[j + 1])[:10]
+                    gap_lows_val[i] = float(gap_low)
+                break
+
+    df["缺口回踩"] = flags
+    df["缺口日期"] = gap_dates
+    df["缺口下沿"] = gap_lows_val
+
+
+# ---------------------------------------------------------------------------
+# 假突破 (Bullish 2B) 指标计算
+# ---------------------------------------------------------------------------
+
+def _compute_bullish_2b_indicator(df: pd.DataFrame):
+    """为每行计算 Bullish 2B 假突破信号。
+
+    添加列：
+      - 假突破2B: bool
+      - 假突破类型: str (盘中假破/收盘突破)
+      - 假突破支撑: float
+    """
+    n = len(df)
+    flags = [False] * n
+    btypes = [""] * n
+    supports = [0.0] * n
+
+    closes = df["收盘"].values
+    highs = df["最高"].values
+    lows = df["最低"].values
+    lookback = 125
+    bottom_win = 10
+    min_gap = 3
+    max_age = 125
+    min_rec = 0.03
+    max_rec = 0.50
+
+    for i in range(lookback, n):
+        if pd.isna(closes[i]) or closes[i] <= 0:
+            continue
+        # 最近 lookback 根K线
+        start = max(0, i - lookback)
+        seg_closes = closes[start:i + 1]
+        seg_lows = lows[start:i + 1]
+        seg_highs = highs[start:i + 1]
+        sn = len(seg_closes)
+        if sn < bottom_win * 2 + min_gap + 2:
+            continue
+
+        # 下跌趋势：MA10 < MA20
+        ma10 = float(np.mean(seg_closes[-10:]))
+        ma20 = float(np.mean(seg_closes[-20:]))
+        if ma10 >= ma20:
+            continue
+
+        # 今日/昨日是否为局部最低
+        today_is_bottom = seg_lows[-1] == min(seg_lows[max(0, sn - 11):sn])
+        yday_is_bottom = seg_lows[-2] == min(seg_lows[max(0, sn - 12):min(sn, sn - 1 + 11)])
+
+        today_low = seg_lows[-1]
+        today_close = seg_closes[-1]
+        yesterday_close = seg_closes[-2]
+
+        # 从右往左找阶段性底部
+        max_bottom_idx = sn - 1 - max(bottom_win, min_gap)
+        found = False
+        for j in range(max_bottom_idx, bottom_win - 1, -1):
+            left_s = max(0, j - bottom_win)
+            right_e = min(sn, j + bottom_win + 1)
+            if seg_lows[j] != min(seg_lows[left_s:right_e]):
+                continue
+            age = sn - 1 - j
+            if age > max_age:
+                continue
+            support = seg_lows[j]
+
+            # 反转确认
+            if j + 1 < sn - 1:
+                post_max = max(seg_closes[j + 1:sn - 1])
+                rec = (post_max - support) / support
+                if rec < min_rec or rec > max_rec:
+                    continue
+            else:
+                continue
+
+            # 条件A：盘中假破支撑后拉回
+            if today_low < support and today_close > support and yesterday_close > support:
+                if today_is_bottom or yday_is_bottom:
+                    flags[i] = True
+                    btypes[i] = "盘中假破后拉回"
+                    supports[i] = float(support)
+                break
+
+            # 条件B：昨日跌破支撑，今日重回上方
+            if yesterday_close < support and today_close > support and seg_closes[-3] > support:
+                if today_is_bottom or yday_is_bottom:
+                    flags[i] = True
+                    btypes[i] = "收盘突破支撑确认"
+                    supports[i] = float(support)
+                break
+
+    df["假突破2B"] = flags
+    df["假突破类型"] = btypes
+    df["假突破支撑"] = supports
+
+
+# ---------------------------------------------------------------------------
+# 创五年新高 指标计算
+# ---------------------------------------------------------------------------
+
+def _compute_long_term_breakout_indicator(df: pd.DataFrame):
+    """为每行计算：是否首次突破2~4年前的有效高点。
+
+    添加列：
+      - 五年新高突破: bool
+      - 五年新高日期: str
+      - 五年新高价格: float
+    """
+    n = len(df)
+    flags = [False] * n
+    high_dates = [""] * n
+    high_prices = [0.0] * n
+
+    closes = df["收盘"].values
+    highs = df["最高"].values
+    dates = df["日期"].astype(str).values
+    min_days = 500   # ~2年
+    max_days = 1000  # ~4年
+    confirm = 20
+
+    for i in range(min_days + confirm, n):
+        if pd.isna(closes[i]) or closes[i] <= 0:
+            continue
+        today_close = closes[i]
+        earliest_j = max(0, i - max_days)
+        latest_j = i - min_days
+        if latest_j <= earliest_j or latest_j < confirm:
+            continue
+
+        for j in range(latest_j, earliest_j - 1, -1):
+            high_j = highs[j]
+            if pd.isna(high_j):
+                continue
+            # 之后20天最高价 < high_j
+            nxt_end = min(j + confirm + 1, i)
+            if j + 1 >= nxt_end:
+                continue
+            if high_j <= max(highs[j + 1:nxt_end]):
+                continue
+            # 该高点至今从未被突破
+            if max(highs[j + 1:i]) >= high_j:
+                continue
+            # 今日收盘突破
+            if today_close <= high_j:
+                continue
+            flags[i] = True
+            high_dates[i] = str(dates[j])[:10]
+            high_prices[i] = float(high_j)
+            break
+
+    df["五年新高突破"] = flags
+    df["五年新高日期"] = high_dates
+    df["五年新高价格"] = high_prices
+
+
+# ---------------------------------------------------------------------------
+# 长上下影线 指标计算
+# ---------------------------------------------------------------------------
+
+def _compute_long_shadow_indicator(df: pd.DataFrame):
+    """为每行计算长上影 + 长下影组合形态。
+
+    规则（移植自 stock_new-android_091118）：
+      - 最近2根K线中，一根上影线占比 ≥ 50%，另一根下影线占比 ≥ 50%
+      - 两根K线的最低振幅 > 2.5%
+      - 近2日最低价 < 前日最低价（确认下跌动能）
+      - 量能未突增（排除异动K线，用成交量代替换手率）
+
+    添加列：
+      - 长上下影线: bool
+    """
+    n = len(df)
+    flags = [False] * n
+
+    opens = df["开盘"].values
+    highs = df["最高"].values
+    lows = df["最低"].values
+    closes = df["收盘"].values
+    volumes = df["成交量"].values
+
+    for i in range(2, n):
+        base_low = float(lows[i - 2])
+        base_vol = float(volumes[i - 2])
+
+        long_upper = False
+        long_lower = False
+        min_volatility = float("inf")
+
+        for j in [i - 1, i]:
+            open_p = float(opens[j])
+            close_p = float(closes[j])
+            high_p = float(highs[j])
+            low_p = float(lows[j])
+            vol = float(volumes[j])
+
+            k_len = high_p - low_p
+            if k_len <= 0:
+                continue
+
+            # 振幅 = (high - low) / ((high + low) / 2) * 100
+            volatility = (high_p - low_p) / ((high_p + low_p) / 2) * 100
+            min_volatility = min(min_volatility, volatility)
+
+            # 量能突增跳过（成交量 > 前日1.5倍视为异动）
+            if base_vol > 0 and vol > base_vol * 1.5:
+                continue
+
+            upper_shadow = high_p - max(open_p, close_p)
+            lower_shadow = min(open_p, close_p) - low_p
+
+            # 长上影：上影线 ≥ K线长度50%，且实体靠近底部
+            if upper_shadow >= 0.5 * k_len and abs(low_p - open_p) < 0.4 * k_len:
+                long_upper = True
+            # 长下影：下影线 ≥ K线长度50%，且实体靠近顶部
+            elif lower_shadow >= 0.5 * k_len and abs(high_p - close_p) < 0.4 * k_len:
+                long_lower = True
+
+        recent_low = min(float(lows[i - 1]), float(lows[i]))
+
+        if (long_upper and long_lower
+                and min_volatility > 2.5
+                and recent_low < base_low):
+            flags[i] = True
+
+    df["长上下影线"] = flags
 
 
 def check_strategy_1(row) -> bool:

@@ -77,13 +77,15 @@ def run_data_update(
     """
     【统一入口】盘后一键更新全部数据。
 
-      0.1  大盘日线 → index_data.update_index_daily()
-      0.2  大盘分钟 → index_data.update_index_minute()
-      0.3  个股日线 → strategy.update_stock_daily_cache()
-      0.4  个股分钟 → minute_data.update_stock_minute_cache()
+      0.1  指数分钟 → index_data.update_index_minute()（18:00 即就绪，先跑）
+      0.2  个股分钟 → minute_data.update_stock_minute_cache()（同上，最耗时）
+      0.3  大盘日线 → index_data.update_index_daily()
+      0.4  个股日线 → strategy.update_stock_daily_cache()
+      顺序说明：Tushare 日线数据约 19:00 后才出全，18:00 就拉会漏掉当天数据，
+      所以分钟线（最耗时）先跑，日线放最后等数据就绪。
     """
     print("\n" + "=" * 70)
-    print("📦 第零步：数据准备（大盘日线 → 大盘分钟 → 个股日线 → 个股分钟）")
+    print("📦 第零步：数据准备（分钟线先跑 → 日线最后，等 Tushare 数据出全）")
     print("=" * 70)
 
     results = {
@@ -95,19 +97,7 @@ def run_data_update(
 
     stock_df = _get_stock_pool_df()
 
-    # ── 0.1 大盘日线 ──
-    if update_index_daily:
-        try:
-            from index_data import update_index_daily
-            t0 = time.time()
-            update_index_daily(days=minute_days)
-            elapsed = (time.time() - t0) / 60
-            results["index_daily"] = True
-            print(f"  ✅ 指数日线更新完成，耗时 {elapsed:.1f} 分钟")
-        except Exception as e:
-            print(f"  ⚠️ 指数日线更新失败: {e}")
-
-    # ── 0.2 指数分钟线（Tushare idx_mins，需权限）──
+    # ── 0.1 指数分钟线（Tushare idx_mins，需权限）──
     if update_index_minute:
         try:
             from index_data import update_index_minute
@@ -124,19 +114,7 @@ def run_data_update(
         except Exception as e:
             print(f"  ⚠️ 指数分钟线更新失败: {e}")
 
-    # ── 0.3 个股日线 ──
-    if update_stock_daily and stock_df is not None:
-        try:
-            from strategy import update_stock_daily_cache
-            t0 = time.time()
-            update_stock_daily_cache(stock_df)
-            elapsed = (time.time() - t0) / 60
-            results["stock_daily"] = True
-            print(f"  ✅ 个股日线更新完成，耗时 {elapsed:.1f} 分钟")
-        except Exception as e:
-            print(f"  ⚠️ 个股日线更新失败: {e}")
-
-    # ── 0.4 个股分钟线 ──
+    # ── 0.2 个股分钟线 ──
     if update_stock_minute and stock_df is not None:
         try:
             from minute_data import update_stock_minute_cache
@@ -156,6 +134,30 @@ def run_data_update(
         except Exception as e:
             print(f"  ⚠️ 个股分钟线更新失败: {e}")
 
+    # ── 0.3 大盘日线 ──
+    if update_index_daily:
+        try:
+            from index_data import update_index_daily
+            t0 = time.time()
+            update_index_daily(days=minute_days)
+            elapsed = (time.time() - t0) / 60
+            results["index_daily"] = True
+            print(f"  ✅ 指数日线更新完成，耗时 {elapsed:.1f} 分钟")
+        except Exception as e:
+            print(f"  ⚠️ 指数日线更新失败: {e}")
+
+    # ── 0.4 个股日线（最后跑，Tushare 日线此时已出全）──
+    if update_stock_daily and stock_df is not None:
+        try:
+            from strategy import update_stock_daily_cache
+            t0 = time.time()
+            update_stock_daily_cache(stock_df)
+            elapsed = (time.time() - t0) / 60
+            results["stock_daily"] = True
+            print(f"  ✅ 个股日线更新完成，耗时 {elapsed:.1f} 分钟")
+        except Exception as e:
+            print(f"  ⚠️ 个股日线更新失败: {e}")
+
     # ── 汇总 ──
     ok = sum(1 for v in results.values() if v)
     print(f"\n  📦 数据准备完毕: {ok}/{len(results)} 项成功")
@@ -172,13 +174,15 @@ def run_main_py(force_update: bool = False, cache_only: bool = False, update_wor
     print("📊 第一步：运行 main.py 策略信号扫描")
     print("=" * 70)
 
-    cmd = [sys.executable, "main.py", "--workers", str(_WORKERS_MAIN), "--update-workers", str(update_workers), "--no-email", "--daily-cache-only"]
+    # 默认不带 --daily-cache-only：扫描阶段在 17:30 后会自动增量更新日线缓存，
+    # 兜底第零步可能漏掉的当天数据（Tushare 日线 18:00 时常常还没出全）
+    cmd = [sys.executable, "main.py", "--workers", str(_WORKERS_MAIN), "--update-workers", str(update_workers), "--no-email"]
     if cache_only:
         cmd.append("--daily-cache-only")
     elif force_update:
         cmd.append("--force-update-daily")
     # --daily-cache-only：强制只用缓存（周末/调试用）
-    # 不加参数：17:30 前用缓存，17:30 后自动拉 BaoStock
+    # 不加参数：17:30 前用缓存，17:30 后自动增量拉取
 
     t0 = time.time()
     result = subprocess.run(cmd, cwd=PROJECT_ROOT)
@@ -518,9 +522,18 @@ def run_chanlun_divergence_scan() -> dict:
         return result
 
     name_map = {}
+    price_map = {}  # 日线前复权收盘价，用于纠正分钟数据复权不一致
     if "名称" in pool_df.columns:
         for _, row in pool_df.iterrows():
-            name_map[str(row["代码"]).zfill(6)] = str(row["名称"])
+            code_key = str(row["代码"]).zfill(6)
+            name_map[code_key] = str(row["名称"])
+    if "最新价" in pool_df.columns:
+        for _, row in pool_df.iterrows():
+            code_key = str(row["代码"]).zfill(6)
+            try:
+                price_map[code_key] = float(row["最新价"])
+            except (ValueError, TypeError):
+                pass
 
     # ── 3.35.3 个股缠论买点+卖点 + 背离扫描（30m + 60m）──
     from strategies.chanlun import analyze, detect_all_buy_points, detect_all_sell_points
@@ -551,6 +564,8 @@ def run_chanlun_divergence_scan() -> dict:
 
                 # 缠论分析（买点+卖点）
                 ctx = analyze(df)
+                # 优先使用日线前复权收盘价（分钟数据可能因复权方式不一致导致价格偏差）
+                daily_close = price_map.get(code)
                 if ctx is not None and ctx.strokes and len(ctx.strokes) >= 3:
                     _, buy_points = detect_all_buy_points(df)
                     for bp in buy_points:
@@ -558,7 +573,7 @@ def run_chanlun_divergence_scan() -> dict:
                             "code": code,
                             "name": name,
                             "buy_type": bp.type,
-                            "price": round(bp.price, 2),
+                            "price": round(daily_close if daily_close else bp.price, 2),
                             "confidence": round(bp.confidence, 2),
                             "reason": bp.reason or "",
                             "frequency": freq_label,
@@ -571,7 +586,7 @@ def run_chanlun_divergence_scan() -> dict:
                             "code": code,
                             "name": name,
                             "sell_type": sp.type,
-                            "price": round(sp.price, 2),
+                            "price": round(daily_close if daily_close else sp.price, 2),
                             "confidence": round(sp.confidence, 2),
                             "reason": sp.reason or "",
                             "frequency": freq_label,
@@ -584,7 +599,7 @@ def run_chanlun_divergence_scan() -> dict:
                         "code": code,
                         "name": name,
                         "div_type": "MACD金叉背离",
-                        "price": div_result.get("latest_price", 0),
+                        "price": daily_close if daily_close else div_result.get("latest_price", 0),
                         "frequency": freq_label,
                     })
                     divergence_count += 1
@@ -1313,8 +1328,11 @@ def build_mini_program_json(signal_file: str, ml_results: dict[str, str], chanlu
         "stocks": final_stocks,
     }
 
-    with open(output_path, "w", encoding="utf-8") as f:
+    # 原子写入：先写临时文件，再 rename，避免 API 读到半成品
+    tmp_path = output_path + ".tmp"
+    with open(tmp_path, "w", encoding="utf-8") as f:
         json.dump(result, f, ensure_ascii=False, indent=2, default=str)
+    os.replace(tmp_path, output_path)  # 原子操作
 
     print(f"  策略命中：{sum(1 for s in stocks_list if s['strategyCount'] > 0)} 只")
     print(f"  ML 命中：{sum(1 for s in stocks_list if s['mlScore'] is not None)} 只")

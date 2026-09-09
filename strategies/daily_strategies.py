@@ -1177,56 +1177,52 @@ class LimitUpPullbackDayTradeStrategy(BaseDailyStrategy):
 
 
 # ======================================================================================
-# W双底形态策略
+# W双底形态策略（右侧企稳版）
 #
 # 核心逻辑：
-#   左底急跌 → 反弹至颈线 → 右底缩量不破前低 → 今日放量突破颈线 = 买入信号
+#   左底急跌 → 反弹至颈线 → 右底缩量不破前低 → 右底刚企稳、开始抬头 = 买入信号
+#
+#   ⚠️ 与旧版区别：旧版等"突破颈线"才出信号（V起来了才追），
+#   新版在右底刚形成、价格刚从右底抬头时出信号（抄底而非追高）。
 #
 # 条件（全部满足才命中）：
 #   ① 存在有效左底（20~55天前的最低点）
 #   ② 颈线有效反弹（颈线 ≥ 左底 × 1.08）
 #   ③ 右底 ≈ 左底（双底价差 ≤ 5%）
-#   ④ 右底缩量（右底区均量 < 左底区均量）
-#   ⑤ 今日收盘 > 颈线（突破确认）
-#   ⑥ 今日放量（成交量 > 20日均量 × 1.3）
-#   ⑦ 上涨趋势确认（MA20 ≥ MA60，收盘 > MA60）
-#   ⑧ 今日温和启动（涨幅 0.5%~9.5%，非涨停追高）
+#   ④ 右底缩量（右底区均量 < 左底区均量，说明抛压衰竭）
+#   ⑤ 右底刚形成（1~5天前），价格刚从右底抬头（收盘 > 右底 × 1.02）
+#   ⑥ 价格尚未 V 型反转（收盘 < 颈线 × 0.92，离颈线还有空间）
+#   ⑦ 今日温和启动（涨幅 0.5%~5%，不是大阳追高）
 # ======================================================================================
 
 class WBottomStrategy(BaseDailyStrategy):
     """
-    W双底形态：左底急跌 → 颈线反弹 → 右底缩量确认 → 放量突破颈线。
+    W双底右侧企稳：左底急跌 → 颈线反弹 → 右底缩量确认 →
+    右底刚企稳抬头时介入（不等突破颈线，避免 V 起来后追高）。
 
     与"二波形态"的区别：
     - 二波形态：要求第一波大涨 ≥ 25%，偏 N 字回调再启动
-    - W双底：两底在同一价格区间（价差 ≤ 5%），偏底部反转
+    - W双底：两底在同一价格区间（价差 ≤ 5%），偏底部反转，右侧企稳即介入
     """
 
     name = "W双底"
-    category = "突破反转"
+    category = "底部反转"
     group = "W双底"
 
     def match(self, row: pd.Series) -> bool:
         # ---- 必需字段检查 ----
         need_fields = [
-            "收盘", "开盘", "涨跌幅", "成交量",
-            "SMA20", "SMA60",
-            "过去20日平均成交量",
+            "收盘", "涨跌幅",
             "W_左底价格", "W_颈线价格", "W_右底价格",
             "W_双底价差比", "W_颈线高度比", "W_右底缩量比",
-            "W_突破颈线", "W_放量突破",
+            "W_右底距今天数",
         ]
         for f in need_fields:
             if f not in row.index or pd.isna(row[f]):
                 return False
 
         close     = float(row["收盘"])
-        open_     = float(row["开盘"])
         pct       = float(row["涨跌幅"])
-        vol       = float(row["成交量"])
-        ma20      = float(row["SMA20"])
-        ma60      = float(row["SMA60"])
-        avg_vol20 = float(row["过去20日平均成交量"])
 
         left_bot   = float(row["W_左底价格"])
         neck       = float(row["W_颈线价格"])
@@ -1234,10 +1230,9 @@ class WBottomStrategy(BaseDailyStrategy):
         gap_ratio  = float(row["W_双底价差比"])
         neck_h     = float(row["W_颈线高度比"])
         vol_shrink = float(row["W_右底缩量比"])
-        breakout   = bool(row["W_突破颈线"])
-        vol_ok     = bool(row["W_放量突破"])
+        right_days = float(row["W_右底距今天数"])  # 右底距今多少天
 
-        if close <= 0 or ma20 <= 0 or ma60 <= 0:
+        if close <= 0:
             return False
         if left_bot <= 0 or neck <= 0 or right_bot <= 0:
             return False
@@ -1250,31 +1245,26 @@ class WBottomStrategy(BaseDailyStrategy):
         if neck_h < 0.08:
             return False
 
-        # ---- 条件③：右底缩量（右底区均量 < 左底区均量，温和放宽）----
+        # ---- 条件③：右底缩量（右底区均量 < 左底区均量）----
         if pd.notna(vol_shrink) and vol_shrink >= 1.0:
             return False
 
-        # ---- 条件④：今日突破颈线 ----
-        if not breakout:
+        # ---- 条件④：右底刚形成（1~5天前），价格刚从右底抬头 ----
+        if right_days < 1 or right_days > 5:
             return False
 
-        # ---- 条件⑤：今日放量确认（量 > 20日均量 × 1.3）----
-        # if not vol_ok:
-        #     return False
-
-        # ---- 条件⑥：上涨趋势（MA20 ≥ MA60，收盘 > MA60）----
-        # if ma20 < ma60 * 0.98:
-        #     return False
-        # if close < ma60:
-        #     return False
-
-        # ---- 条件⑦：温和启动（涨幅 0.5%~9.5%，不追涨停）----
-        if pct < 0.5 or pct >= 9.5:
+        # 收盘必须比右底价格高至少 2%（确认已经企稳抬头，不是还在跌）
+        if close <= right_bot * 1.02:
             return False
 
-        # ---- 条件⑧：阳线 ----
-        # if close <= open_:
-        #     return False
+        # ---- 条件⑤：价格尚未 V 型反转（离颈线还有 ≥ 8% 空间）----
+        # 如果已经涨到颈线附近（≥92%），说明 V 起来了，不再介入
+        if close >= neck * 0.92:
+            return False
+
+        # ---- 条件⑥：温和启动，不追大阳 ----
+        if pct < 0.5 or pct >= 5.0:
+            return False
 
         return True
 
@@ -1290,6 +1280,9 @@ class WBottomStrategy(BaseDailyStrategy):
                 vol_s = _num(row, "W_右底缩量比")
                 left_d = _num(row, "W_左底距今天数")
                 right_d = _num(row, "W_右底距今天数")
+                right_bot = _num(row, "W_右底价格")
+                neck = _num(row, "W_颈线价格")
+                close = _num(row, "收盘")
 
                 if pd.notna(gap):
                     parts.append(f"双底价差{gap*100:.1f}%")
@@ -1299,8 +1292,12 @@ class WBottomStrategy(BaseDailyStrategy):
                     parts.append(f"右底缩量{vol_s*100:.0f}%")
                 if pd.notna(left_d) and pd.notna(right_d):
                     parts.append(f"左底{int(left_d)}天前/右底{int(right_d)}天前")
+                if pd.notna(right_bot) and pd.notna(close) and right_bot > 0:
+                    parts.append(f"离右底+{(close/right_bot-1)*100:.1f}%")
+                if pd.notna(neck) and pd.notna(close) and neck > 0:
+                    parts.append(f"距颈线{(neck/close-1)*100:.0f}%空间")
 
-                reason = "W双底突破: " + " | ".join(parts) if parts else "W双底突破"
+                reason = "W双底右侧企稳: " + " | ".join(parts) if parts else "W双底右侧企稳"
                 return StrategySignal(name=self.name, category=self.category, reason=reason)
         except Exception:
             return None
@@ -1434,6 +1431,151 @@ class MACDGoldenCrossDivergenceStrategy(BaseDailyStrategy):
                     f"前次{rec2_days}天前→最近{rec1_days}天前",
                 ]
                 reason = "MACD金叉底背离: " + " | ".join(parts)
+                return StrategySignal(name=self.name, category=self.category, reason=reason)
+        except Exception:
+            return None
+
+
+# ======================================================================================
+# 回踩缺口不破策略
+# ======================================================================================
+
+class GapTouchStrategy(BaseDailyStrategy):
+    """
+    回踩缺口不破：向上跳空缺口 ≥5天未补 → 今日最低价触及缺口上沿 → 收盘在 MA120 上方。
+
+    含义：缺口形成后股价回调，触碰缺口区域但未补掉，说明缺口支撑有效。
+    """
+
+    name = "回踩缺口不破"
+    category = "突破反转"
+    group = "缺口形态"
+
+    def match(self, row: pd.Series) -> bool:
+        if "缺口回踩" not in row.index or pd.isna(row["缺口回踩"]):
+            return False
+        return bool(row["缺口回踩"])
+
+    def evaluate(self, row: pd.Series) -> StrategySignal | None:
+        if not self.enabled:
+            return None
+        try:
+            if self.match(row):
+                gap_date = str(row.get("缺口日期", ""))[:10]
+                gap_low = float(row.get("缺口下沿", 0))
+                close = float(row["收盘"])
+                reason = f"回踩缺口不破: 缺口日{gap_date}, 下沿¥{gap_low:.2f}, 收盘¥{close:.2f}"
+                return StrategySignal(name=self.name, category=self.category, reason=reason)
+        except Exception:
+            return None
+
+
+# ======================================================================================
+# 假突破 (Bullish 2B) 策略
+# ======================================================================================
+
+class Bullish2BStrategy(BaseDailyStrategy):
+    """
+    假突破 (Bullish 2B)：下跌趋势中，阶段性底部支撑被短暂跌破后拉回。
+
+    两种形态：
+    - 盘中假破：今日最低价跌破支撑但收盘拉回上方
+    - 收盘突破：昨日收盘跌破支撑，今日收盘重新站回
+    """
+
+    name = "假突破2B"
+    category = "突破反转"
+    group = "反转形态"
+
+    def match(self, row: pd.Series) -> bool:
+        if "假突破2B" not in row.index or pd.isna(row["假突破2B"]):
+            return False
+        return bool(row["假突破2B"])
+
+    def evaluate(self, row: pd.Series) -> StrategySignal | None:
+        if not self.enabled:
+            return None
+        try:
+            if self.match(row):
+                btype = str(row.get("假突破类型", ""))
+                support = float(row.get("假突破支撑", 0))
+                close = float(row["收盘"])
+                reason = f"假突破2B({btype}): 支撑¥{support:.2f}, 收盘¥{close:.2f}"
+                return StrategySignal(name=self.name, category=self.category, reason=reason)
+        except Exception:
+            return None
+
+
+# ======================================================================================
+# 创五年新高策略
+# ======================================================================================
+
+class LongTermBreakoutStrategy(BaseDailyStrategy):
+    """
+    创五年新高：今日收盘首次突破 2~4 年前的有效历史高点。
+
+    含义：尘封多年的高点被突破，长线套牢盘全部解套，上涨空间打开。
+    """
+
+    name = "创五年新高"
+    category = "主升"
+    group = "新高突破"
+
+    def match(self, row: pd.Series) -> bool:
+        if "五年新高突破" not in row.index or pd.isna(row["五年新高突破"]):
+            return False
+        return bool(row["五年新高突破"])
+
+    def evaluate(self, row: pd.Series) -> StrategySignal | None:
+        if not self.enabled:
+            return None
+        try:
+            if self.match(row):
+                high_date = str(row.get("五年新高日期", ""))[:10]
+                high_price = float(row.get("五年新高价格", 0))
+                close = float(row["收盘"])
+                pct = (close / high_price - 1) * 100 if high_price > 0 else 0
+                reason = f"创五年新高: 前高{high_date} ¥{high_price:.2f}, 突破{pct:+.1f}%"
+                return StrategySignal(name=self.name, category=self.category, reason=reason)
+        except Exception:
+            return None
+
+
+# ======================================================================================
+# 长上下影线组合策略
+# ======================================================================================
+
+class LongShadowStrategy(BaseDailyStrategy):
+    """
+    长上下影线组合：近2天出现一根长上影 + 一根长下影，价格创新低，振幅放大。
+
+    逻辑（移植自 stock_new-android_091118）：
+    1. 近2根K线中，一根上影线 ≥ K线长度50%（实体靠近底部）
+    2. 另一根下影线 ≥ K线长度50%（实体靠近顶部）
+    3. 两根K线最低振幅 > 2.5%
+    4. 近2日最低价 < 前日最低价（确认下跌动能）
+    5. 无量能突增（排除异动）
+
+    含义：长上影表示上方抛压重，长下影表示下方承接强，
+          组合出现在价格新低位置，可能是主力洗盘后即将拉升的信号。
+    """
+
+    name = "长上下影线"
+    category = "突破反转"
+    group = "反转形态"
+
+    def match(self, row: pd.Series) -> bool:
+        if "长上下影线" not in row.index or pd.isna(row["长上下影线"]):
+            return False
+        return bool(row["长上下影线"])
+
+    def evaluate(self, row: pd.Series) -> StrategySignal | None:
+        if not self.enabled:
+            return None
+        try:
+            if self.match(row):
+                close = float(row["收盘"])
+                reason = f"长上下影线组合: 收盘¥{close:.2f}"
                 return StrategySignal(name=self.name, category=self.category, reason=reason)
         except Exception:
             return None

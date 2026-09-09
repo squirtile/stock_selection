@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1.0">
-<title>📋 市场数据观察日志</title>
+<title>🧪 策略实验室</title>
 <style>
 *,*::before,*::after{margin:0;padding:0;box-sizing:border-box}
 body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif;background:#f5f6f8;color:#2c3e50;min-height:100vh}
@@ -166,9 +166,9 @@ a{text-decoration:none;color:inherit}
 </style>
 </head>
 <body>
-<nav class="topbar"><div class="topbar-brand">📋 市场数据观察日志</div></nav>
+<nav class="topbar"><div class="topbar-brand">🧪 策略实验室</div></nav>
 <div class="container">
-<div class="hero"><h1>📋 <span>市场数据</span>观察日志</h1><p>个人量化研究记录 · 仅供学习参考</p></div>
+<div class="hero"><h1>🧪 <span>策略</span>实验室</h1><p>个人量化研究记录 · 仅供学习参考</p></div>
 <div class="status-row"><div class="time"><i></i>{% if marketContext and marketContext.tradeDate %}数据日期 {{ marketContext.tradeDate[:4] }}-{{ marketContext.tradeDate[4:6] }}-{{ marketContext.tradeDate[6:8] }}{% else %}{{ time }}{% endif %}</div><div class="right"><span>共 {{ total }} 只</span><a class="refresh" href="/">🔄</a></div></div>
 <div class="update-tip">⏰ 每日 18:30 盘后数据更新，届时请刷新页面查看最新结果</div>
 <div class="main-tabs" id="mainTabs">
@@ -214,12 +214,12 @@ a{text-decoration:none;color:inherit}
 {% endfor %}
 {% if stocks|length == 0 %}<div class="empty"><div class="icon">📭</div><div class="text">暂无选股结果</div></div>{% endif %}
 </div>
-<div class="footer">以上内容仅供个人研究参考，不构成投资建议</div>
 </div>
 <!-- ===== 连板天梯 ===== -->
 <div id="panel-ladder" class="tab-panel" style="display:none"><div id="ladderContent"><div class="empty"><div class="icon">🚀</div><div class="text">加载中…</div></div></div></div>
 <!-- ===== 板块热度 ===== -->
 <div id="panel-sector" class="tab-panel" style="display:none"><div id="sectorContent"><div class="empty"><div class="icon">🔥</div><div class="text">加载中…</div></div></div></div>
+<div class="footer">以上内容仅供个人研究参考，不构成投资建议<br><a href="https://beian.miit.gov.cn/" target="_blank" rel="noopener" style="color:#ccc;">湘ICP备2026029124号-1</a></div>
 </div>
 <script>
 // === 资金动向 ===

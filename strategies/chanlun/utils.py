@@ -92,22 +92,21 @@ def find_bottom_divergence(
     lookback: int = 60,
     price_low_col: str = "最低",
     indicator_col: str = "DIF",
-    price_tolerance: float = 0.02,
 ) -> tuple[bool, dict]:
     """
-    检测底背离：价格新低，但指标拒绝新低。
+    检测底背离：价格创新低，但指标拒绝跟随创新低。
 
     在最近 lookback 根K线内：
-    1. 找两个低点区间（各5根K线的局部最低）
-    2. 后一个低点的价格 < 前一个低点（价格新低）
-    3. 后一个低点的指标值 > 前一个低点（指标拒绝新低）
+    1. 前半段和后半段都找价格最低点（统一标准）
+    2. 后半段价格低点 < 前半段价格低点（价格创新低）
+    3. 后半段该点的指标值 > 前半段该点的指标值（指标拒绝新低）
+    4. 额外过滤：必须是下跌/震荡趋势才检测（MA5 < MA20）
 
     Args:
         df: 含价格列和指标列的 DataFrame
         lookback: 回溯K线数
         price_low_col: 价格列名（通常用"最低"）
         indicator_col: 指标列名（通常用"DIF"）
-        price_tolerance: 价格容忍度，两个低点价格差 < tolerance 也视为背离
 
     Returns:
         (是否底背离, {详情})
@@ -118,7 +117,15 @@ def find_bottom_divergence(
     recent = df.tail(lookback).copy().reset_index(drop=True)
     n = len(recent)
 
-    # 分前后两半找局部最低
+    # ── 趋势过滤：上升趋势中不检测底背离 ──
+    if "MA5" in recent.columns and "MA20" in recent.columns:
+        ma5_last = recent["MA5"].iloc[-1]
+        ma20_last = recent["MA20"].iloc[-1]
+        if pd.notna(ma5_last) and pd.notna(ma20_last) and ma5_last > ma20_last:
+            # MA5 > MA20 说明短期在均线上方，非底部区域
+            return False, {}
+
+    # 分前后两半，都找价格最低点
     mid = n // 2
     first_half = recent.iloc[:mid]
     second_half = recent.iloc[mid:]
@@ -126,31 +133,36 @@ def find_bottom_divergence(
     if len(first_half) < 5 or len(second_half) < 5:
         return False, {}
 
-    # 前段：找指标最低值的位置（-20~-10根附近）
-    first_indicator_min_idx = first_half[indicator_col].idxmin()
-    first_price_at_indicator_min = first_half.loc[first_indicator_min_idx, price_low_col]
-    first_indicator_val = first_half.loc[first_indicator_min_idx, indicator_col]
+    # 前半段：找价格最低点
+    first_price_min_idx = first_half[price_low_col].idxmin()
+    first_price_val = float(first_half.loc[first_price_min_idx, price_low_col])
+    first_indicator_val = float(first_half.loc[first_price_min_idx, indicator_col])
 
-    # 后段：找价格最低值的位置（近10根内）
+    # 后半段：找价格最低点（统一标准）
     second_price_min_idx = second_half[price_low_col].idxmin()
-    second_price_val = second_half.loc[second_price_min_idx, price_low_col]
-    second_indicator_val = second_half.loc[second_price_min_idx, indicator_col]
+    second_price_val = float(second_half.loc[second_price_min_idx, price_low_col])
+    second_indicator_val = float(second_half.loc[second_price_min_idx, indicator_col])
 
-    # 价格新低（后段低点 < 前段低点 × (1+tolerance)）
-    price_new_low = second_price_val < first_price_at_indicator_min * (1 + price_tolerance)
+    if pd.isna(first_price_val) or pd.isna(second_price_val):
+        return False, {}
+    if first_price_val <= 0 or second_price_val <= 0:
+        return False, {}
 
-    # 指标拒绝新低（后段低点对应的指标 > 前段低点对应的指标）
+    # 价格创新低：后半段最低价 < 前半段最低价
+    price_new_low = second_price_val < first_price_val
+
+    # 指标拒绝新低：后半段价格低点对应的指标 > 前半段价格低点对应的指标
     indicator_no_new_low = second_indicator_val > first_indicator_val
 
     is_divergence = price_new_low and indicator_no_new_low
 
     details = {
-        "first_idx": first_indicator_min_idx,
-        "second_idx": second_price_min_idx,
-        "first_price": round(float(first_price_at_indicator_min), 4),
-        "second_price": round(float(second_price_val), 4),
-        "first_indicator": round(float(first_indicator_val), 6),
-        "second_indicator": round(float(second_indicator_val), 6),
+        "first_idx": int(first_price_min_idx),
+        "second_idx": int(second_price_min_idx),
+        "first_price": round(first_price_val, 4),
+        "second_price": round(second_price_val, 4),
+        "first_indicator": round(first_indicator_val, 6),
+        "second_indicator": round(second_indicator_val, 6),
         "price_new_low": price_new_low,
         "indicator_no_new_low": indicator_no_new_low,
     }
@@ -163,6 +175,8 @@ def find_macd_golden_cross_divergence(
     max_golden_cross_gap: int = 55,
     min_golden_cross_gap: int = 8,
     dif_improve_ratio: float = 0.15,
+    max_recency_bars: int = 40,
+    min_price_decline_pct: float = 0.005,
 ) -> tuple[bool, dict]:
     """
     检测 MACD 金叉底背离（日线 MACDGoldenCrossDivergenceStrategy 的30分钟版本）。
@@ -171,6 +185,8 @@ def find_macd_golden_cross_divergence(
     1. 找到最近两次 MACD 金叉
     2. 后一次金叉的 DIF > 前一次（DIF 底部抬高）
     3. 后一次金叉前价格更低 → 底背离
+    4. 最近金叉距今 ≤ max_recency_bars 根K线（避免过期信号）
+    5. 价格跌幅 ≥ min_price_decline_pct（避免噪声级"新低"）
 
     Returns:
         (是否金叉底背离, {详情})
@@ -187,6 +203,12 @@ def find_macd_golden_cross_divergence(
     # 最近两次金叉
     rec1_idx = cross_indices[-1]  # 最近一次
     rec2_idx = cross_indices[-2]  # 倒数第二次
+
+    # ── 时效过滤：最近金叉不能太旧 ──
+    n = len(df)
+    bars_since_cross = n - 1 - rec1_idx
+    if bars_since_cross > max_recency_bars:
+        return False, {}
 
     # 检查间隔
     gap = rec1_idx - rec2_idx
@@ -211,6 +233,12 @@ def find_macd_golden_cross_divergence(
 
     if rec2_low <= rec1_low:
         return False, {}
+
+    # ── 价格跌幅过滤：新低必须有意义，不能只是 noise ──
+    if rec2_low > 0:
+        price_decline = (rec2_low - rec1_low) / rec2_low
+        if price_decline < min_price_decline_pct:
+            return False, {}
 
     details = {
         "rec1_golden_cross_idx": rec1_idx,

@@ -9,6 +9,10 @@ from .daily_strategies import (
     AnnualLineBreakStrategy,
     WBottomStrategy,
     MACDGoldenCrossDivergenceStrategy,
+    GapTouchStrategy,
+    Bullish2BStrategy,
+    LongTermBreakoutStrategy,
+    LongShadowStrategy,
 )
 
 
@@ -36,6 +40,16 @@ def get_daily_strategies() -> list[BaseDailyStrategy]:
         # 突破
         MainBigYangPullbackNoBreakStrategy(),
         AnnualLineBreakStrategy(),
+
+        # 反转形态
+        Bullish2BStrategy(),     # 假突破2B
+        LongShadowStrategy(),    # 长上下影线组合
+
+        # 缺口形态
+        GapTouchStrategy(),      # 回踩缺口不破
+
+        # 新高突破
+        LongTermBreakoutStrategy(),  # 创五年新高
 
         # 底背离
         MACDGoldenCrossDivergenceStrategy(),

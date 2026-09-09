@@ -112,7 +112,7 @@ class BaoStockMinuteSource(MinuteDataSource):
             start_date=start_date,
             end_date=end_date,
             frequency=str(frequency),
-            adjustflag="1",  # 前复权
+            adjustflag="2",  # 前复权（与日线保持一致）
         )
 
         if rs.error_code != "0":
