@@ -631,7 +631,7 @@ def _get_strategy_type_map() -> dict[str, dict[str, str]]:
             "主升-均线多头排列":       {"group": "趋势跟踪", "groupKey": "趋势跟踪"},
             "二波埋伏":                {"group": "回调买入", "groupKey": "回调买入"},
             "二波形态":                {"group": "回调买入", "groupKey": "回调买入"},
-            "主升-大阳回调不破10日线": {"group": "突破",     "groupKey": "突破"},
+            "主升-大阳回调不破10日线": {"group": "趋势跟踪", "groupKey": "趋势跟踪"},
             "年线突破":                {"group": "突破",     "groupKey": "突破"},
         }
 
@@ -840,7 +840,12 @@ def _build_kline_data(code: str, hist_dir: str, days: int = 30) -> list[dict]:
     return klines
 
 
-def build_mini_program_json(signal_file: str, ml_results: dict[str, str], chanlun_data: dict | None = None) -> str:
+def build_mini_program_json(
+    signal_file: str,
+    ml_results: dict[str, str],
+    chanlun_data: dict | None = None,
+    backtest_review: dict | None = None,
+) -> str:
     """
     合并策略信号 + ML 扫描结果 + 缠论/背离，生成小程序可直接展示的 JSON 文件。
 
@@ -874,6 +879,7 @@ def build_mini_program_json(signal_file: str, ml_results: dict[str, str], chanlu
         stocks_dict[code] = {
             "code": code,
             "name": name,
+            "signalDate": str(_safe(row.get("K线日期")))[:10],
             "price": _safe_float(row.get("最新价")),
             "pct": _safe_float(row.get("涨跌幅")),
             "industry": str(_safe(row.get("行业"))),
@@ -1103,7 +1109,8 @@ def build_mini_program_json(signal_file: str, ml_results: dict[str, str], chanlu
             bt = cs.get("buy_type", "其他")
             freq_buy_groups.setdefault(freq, {}).setdefault(bt, []).append(cs)
 
-        type_map = {"1B": "一买", "2B": "二买", "3B": "三买"}
+        # 一买为左侧反转信号，当前产品不纳入策略扫描及复盘统计。
+        type_map = {"2B": "二买", "3B": "三买"}
         for freq in ["30分钟", "60分钟"]:
             buy_groups = freq_buy_groups.get(freq, {})
             for bt_code, bt_cn in type_map.items():
@@ -1146,7 +1153,8 @@ def build_mini_program_json(signal_file: str, ml_results: dict[str, str], chanlu
             st = ss.get("sell_type", "其他")
             freq_sell_groups.setdefault(freq, {}).setdefault(st, []).append(ss)
 
-        sell_type_map = {"1S": "一卖", "2S": "二卖", "3S": "三卖"}
+        # 卖点保留在底层分析/Excel中用于风险研究，不进入网页策略标签和选股列表。
+        sell_type_map = {}
         for freq in ["30分钟", "60分钟"]:
             sell_groups = freq_sell_groups.get(freq, {})
             for st_code, st_cn in sell_type_map.items():
@@ -1325,6 +1333,8 @@ def build_mini_program_json(signal_file: str, ml_results: dict[str, str], chanlu
         "total": len(final_stocks),
         "tabGroups": tab_groups,
         "marketContext": market_ctx,
+        # 此数据在覆盖旧 JSON 前生成，供前端/接口展示上一批命中股票的当日复盘。
+        "backtestReview": backtest_review or {},
         "stocks": final_stocks,
     }
 
@@ -1611,8 +1621,17 @@ def main():
     # 3.4 市场环境评估（板块热度标签）
     run_market_context()
 
-    # 3.5 生成小程序 JSON
-    build_mini_program_json(signal_file, ml_results, chanlun_data=chanlun_data)
+    # 3.5 覆盖小程序 JSON 前先保留上一版命中，并按最新完整日线做当日复盘。
+    from backtest.daily_signal_review import review_previous_signals
+    backtest_review = review_previous_signals(PROJECT_ROOT)
+
+    # 3.6 生成新的小程序 JSON
+    build_mini_program_json(
+        signal_file,
+        ml_results,
+        chanlun_data=chanlun_data,
+        backtest_review=backtest_review,
+    )
 
     if args.no_email:
         print("\n" + "=" * 70)

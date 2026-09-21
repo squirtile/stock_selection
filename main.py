@@ -1108,59 +1108,33 @@ def send_signal_email(excel_path, all_df, not_limit_up_df, limit_up_df, breakthr
 
 def run_realtime(args):
     """
-    盘中实时扫描模式。
-    读取 output/a_stock_selected.xlsx 基础池，读取 cache/hist 的 BaoStock 历史K线缓存，
-    再用 Tushare 老接口 get_realtime_quotes 获取盘中实时行情。
+    盘中实时评分模式：使用全市场公开行情，并在10:30后应用本地缓存
+    学习出的涨停前形态过滤规则。
     """
+    from intraday_scanner import scan_intraday
 
-    from realtime_strategy import scan_realtime_once
-
-    if args.loop:
-        while True:
-            loop_start_time = time.time()
-
-            print("\n" + "=" * 100)
-            print(f"开始新一轮实时扫描：{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-            print("=" * 100)
-
-            try:
-                scan_realtime_once(
-                    batch_size=args.batch_size,
-                    quote_sleep=args.quote_sleep,
-                    max_stocks=args.max_stocks,
-                    max_workers=args.max_workers,
-                    enable_minute=not args.disable_minute,
-                    minute_max_stocks=args.minute_max_stocks,
-                )
-            except KeyboardInterrupt:
-                print("用户中断，实时扫描结束。")
-                break
-            except Exception as e:
-                print(f"本轮实时扫描异常：{e}")
-
-            elapsed = time.time() - loop_start_time
-            sleep_seconds = max(0, args.interval - elapsed)
-
+    while True:
+        started = time.time()
+        result = scan_intraday(limit=args.max_stocks or 50)
+        if result.get("success"):
             print(
-                f"本轮耗时：{elapsed:.2f} 秒，"
-                f"目标间隔：{args.interval} 秒，"
-                f"等待：{sleep_seconds:.2f} 秒后开始下一轮..."
+                f"盘中行情 {result.get('time')}：全市场 {result.get('total', 0)} 只，"
+                f"策略匹配 {result.get('matched', 0)} 只，展示 {len(result.get('stocks', []))} 只。"
             )
-
-            try:
-                time.sleep(sleep_seconds)
-            except KeyboardInterrupt:
-                print("用户中断，实时扫描结束。")
-                break
-    else:
-        scan_realtime_once(
-            batch_size=args.batch_size,
-            quote_sleep=args.quote_sleep,
-            max_stocks=args.max_stocks,
-            max_workers=args.max_workers,
-            enable_minute=not args.disable_minute,
-            minute_max_stocks=args.minute_max_stocks,
-        )
+            for stock in result.get("stocks", [])[:20]:
+                print(
+                    f"  {stock['code']} {stock['name']} | 评分 {stock['score']} | "
+                    f"{stock['pct']:+.2f}% | {'、'.join(stock.get('reasons', []))}"
+                )
+        else:
+            print(f"盘中行情获取失败：{result.get('error', '未知错误')}")
+        if not args.loop:
+            break
+        try:
+            time.sleep(max(10, args.interval - (time.time() - started)))
+        except KeyboardInterrupt:
+            print("用户中断，盘中实时评分结束。")
+            break
 
 
 def parse_args():

@@ -1,8 +1,18 @@
 # ── 股票选股 ──
-# 每个交易日 19:00 执行每日选股报告（收盘后，Tushare数据已就绪）
-# --update-minute: 日线扫描后自动更新 5分钟/30分钟K线缓存
-# --minute-max-stocks 200: 只更新前200只（首次全量后，增量很快；全量1156只约需29分钟）
-0 19 * * 1-5 cd /home/ubuntu/code/stock/stock_selection && /usr/bin/python3 daily_report.py --force-update --update-minute --minute-max-stocks 200 --no-email >> /var/log/stock_daily.log 2>&1
+# 每个交易日上午9:30-11:30、下午13:00-15:00运行盘中低涨幅候选扫描。
+# timeout 保证到时自动结束；flock 防止重复启动。
+30 9 * * 1-5 /usr/bin/flock -n /tmp/stock_intraday_scanner.lock /usr/bin/timeout 7200 /bin/bash -lc 'cd /home/ubuntu/code/stock/stock_selection && PYTHONUNBUFFERED=1 /usr/bin/python3 intraday_scanner.py --loop --interval 60 >> output/intraday_cron.log 2>&1'
+0 13 * * 1-5 /usr/bin/flock -n /tmp/stock_intraday_scanner.lock /usr/bin/timeout 7200 /bin/bash -lc 'cd /home/ubuntu/code/stock/stock_selection && PYTHONUNBUFFERED=1 /usr/bin/python3 intraday_scanner.py --loop --interval 60 >> output/intraday_cron.log 2>&1'
+# 收盘后只用当天免费网页快照评价“个股+板块”过滤效果，不请求Tushare/BaoStock。
+10 15 * * 1-5 cd /home/ubuntu/code/stock/stock_selection && /usr/bin/python3 backtest/intraday_sector_review.py >> output/intraday_sector_review.log 2>&1
+# 晚间分钟缓存更新完成后，重新推演10:30个股+板块历史效果。
+30 20 * * 1-5 cd /home/ubuntu/code/stock/stock_selection && /usr/bin/python3 backtest/intraday_sector_historical_research.py >> output/intraday_sector_historical.log 2>&1
+# 每晚归档过期日报/选股导出；只移动到 output/archive，不直接删除
+30 21 * * 1-5 cd /home/ubuntu/code/stock/stock_selection && /usr/bin/python3 maintenance/cleanup_output.py --apply >> output/cleanup_output.log 2>&1
+
+# 每个交易日 18:30 执行每日选股报告。分钟线只更新前 200 只，避免全市场分钟缓存
+# 阻塞整批日线选股结果；日线仍全量强制更新。flock 防重入，timeout 防止异常任务长期占用。
+30 18 * * 1-5 /usr/bin/flock -n /tmp/stock_daily_report.lock /usr/bin/timeout 7200 /bin/bash -lc 'cd /home/ubuntu/code/stock/stock_selection && PYTHONUNBUFFERED=1 /usr/bin/python3 daily_report.py --force-update --minute-max-stocks 200 --no-email >> output/daily_report_cron.log 2>&1'
 
 # ── 福彩推荐 ──
 # 每天早上 4:00 执行福彩3D + 双色球统一推荐

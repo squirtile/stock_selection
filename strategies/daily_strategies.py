@@ -99,7 +99,8 @@ class MainBigYangPullbackNoBreakStrategy(BaseDailyStrategy):
 
     name = "主升-大阳回调不破10日线"
     category = "主升"
-    group = "突破"
+    # 这是主升趋势中的回调策略，不归入“突破”分组，避免与突破类策略重复展示。
+    group = "趋势跟踪"
 
     def match(self, row: pd.Series) -> bool:
         need_cols = [
@@ -1471,36 +1472,34 @@ class GapTouchStrategy(BaseDailyStrategy):
 
 
 # ======================================================================================
-# 假突破 (Bullish 2B) 策略
+# 放量启动—缩量回踩—二次突破策略
 # ======================================================================================
 
-class Bullish2BStrategy(BaseDailyStrategy):
+class SecondBreakoutStrategy(BaseDailyStrategy):
     """
-    假突破 (Bullish 2B)：下跌趋势中，阶段性底部支撑被短暂跌破后拉回。
+    放量启动—缩量回踩—二次突破（日线候选）。
 
-    两种形态：
-    - 盘中假破：今日最低价跌破支撑但收盘拉回上方
-    - 收盘突破：昨日收盘跌破支撑，今日收盘重新站回
+    严格采用《二次突破策略_v1.md》的 3+2 日线条件。这里仅产生
+    收盘后的候选池；下一交易日是否真正突破，仍需分钟数据单独确认。
     """
 
-    name = "假突破2B"
+    name = "放量启动-缩量回踩-二次突破"
     category = "突破反转"
-    group = "反转形态"
+    group = "启动回踩"
 
     def match(self, row: pd.Series) -> bool:
-        if "假突破2B" not in row.index or pd.isna(row["假突破2B"]):
+        if "二次突破候选" not in row.index or pd.isna(row["二次突破候选"]):
             return False
-        return bool(row["假突破2B"])
+        return bool(row["二次突破候选"])
 
     def evaluate(self, row: pd.Series) -> StrategySignal | None:
         if not self.enabled:
             return None
         try:
             if self.match(row):
-                btype = str(row.get("假突破类型", ""))
-                support = float(row.get("假突破支撑", 0))
                 close = float(row["收盘"])
-                reason = f"假突破2B({btype}): 支撑¥{support:.2f}, 收盘¥{close:.2f}"
+                reference = float(row.get("二次突破参考位", row.get("最高", close)))
+                reason = f"二次突破候选: 收盘¥{close:.2f}，次日观察突破¥{reference:.2f}"
                 return StrategySignal(name=self.name, category=self.category, reason=reason)
         except Exception:
             return None

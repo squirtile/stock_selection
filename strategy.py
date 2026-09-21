@@ -1088,10 +1088,10 @@ def prepare_hist_data(df: pd.DataFrame) -> pd.DataFrame:
     ).rolling(60, min_periods=30).sum()
 
     # =====================================================================
-    # 新策略指标：回踩缺口不破 / 假突破2B / 创五年新高
+    # 新策略指标：回踩缺口不破 / 二次突破 / 创五年新高
     # =====================================================================
     _compute_gap_touch_indicator(df)
-    _compute_bullish_2b_indicator(df)
+    _compute_second_breakout_indicator(df)
     _compute_long_term_breakout_indicator(df)
     _compute_long_shadow_indicator(df)
 
@@ -1156,99 +1156,48 @@ def _compute_gap_touch_indicator(df: pd.DataFrame):
 
 
 # ---------------------------------------------------------------------------
-# 假突破 (Bullish 2B) 指标计算
+# 放量启动—缩量回踩—二次突破 指标计算
 # ---------------------------------------------------------------------------
 
-def _compute_bullish_2b_indicator(df: pd.DataFrame):
-    """为每行计算 Bullish 2B 假突破信号。
+def _compute_second_breakout_indicator(df: pd.DataFrame):
+    """计算文档《二次突破策略_v1》的日线候选形态。
 
-    添加列：
-      - 假突破2B: bool
-      - 假突破类型: str (盘中假破/收盘突破)
-      - 假突破支撑: float
+    t 日收盘后确认：前三日放量启动，后两日缩量回踩且保持均线结构。
+    下一交易日的分钟级突破确认不在日线扫描中伪造，候选只在当日有效。
     """
     n = len(df)
     flags = [False] * n
-    btypes = [""] * n
-    supports = [0.0] * n
-
+    breakout_levels = [np.nan] * n
     closes = df["收盘"].values
-    highs = df["最高"].values
     lows = df["最低"].values
-    lookback = 125
-    bottom_win = 10
-    min_gap = 3
-    max_age = 125
-    min_rec = 0.03
-    max_rec = 0.50
+    volumes = df["成交量"].values
 
-    for i in range(lookback, n):
-        if pd.isna(closes[i]) or closes[i] <= 0:
+    # 最早需要 t-9 至 t 的十个交易日，另需 20 日区间计算位置与均线。
+    for i in range(19, n):
+        if any(pd.isna(v) or v <= 0 for v in (*closes[i - 9:i + 1], *lows[i - 1:i + 1], *volumes[i - 9:i + 1])):
             continue
-        # 最近 lookback 根K线
-        start = max(0, i - lookback)
-        seg_closes = closes[start:i + 1]
-        seg_lows = lows[start:i + 1]
-        seg_highs = highs[start:i + 1]
-        sn = len(seg_closes)
-        if sn < bottom_win * 2 + min_gap + 2:
-            continue
+        prior_five_avg_volume = float(np.mean(volumes[i - 9:i - 4]))
+        launch_avg_volume = float(np.mean(volumes[i - 4:i - 1]))
+        pullback_avg_volume = float(np.mean(volumes[i - 1:i + 1]))
+        lowest_20 = float(np.min(lows[i - 19:i + 1]))
+        highest_20 = float(np.max(df["最高"].values[i - 19:i + 1]))
+        ma10 = float(np.mean(closes[i - 9:i + 1]))
+        ma20 = float(np.mean(closes[i - 19:i + 1]))
 
-        # 下跌趋势：MA10 < MA20
-        ma10 = float(np.mean(seg_closes[-10:]))
-        ma20 = float(np.mean(seg_closes[-20:]))
-        if ma10 >= ma20:
-            continue
+        position_ok = closes[i] / lowest_20 <= 1.20 and highest_20 / lowest_20 <= 1.30
+        launch_return = closes[i - 2] / closes[i - 5] - 1
+        launch_up_days = sum(closes[k] > closes[k - 1] for k in range(i - 4, i - 1))
+        launch_ok = 0.03 <= launch_return <= 0.12 and launch_up_days >= 2
+        volume_ok = launch_avg_volume >= prior_five_avg_volume * 1.80
+        pullback_ok = closes[i] < closes[i - 1] <= closes[i - 2] and closes[i] >= closes[i - 2] * 0.95
+        shrink_ok = pullback_avg_volume <= launch_avg_volume * 0.75 and volumes[i] < volumes[i - 1]
+        structure_ok = closes[i] >= ma10 >= ma20 and min(lows[i - 1:i + 1]) >= closes[i - 4] * 0.99
+        flags[i] = bool(position_ok and launch_ok and volume_ok and pullback_ok and shrink_ok and structure_ok)
+        if flags[i]:
+            breakout_levels[i] = float(np.max(df["最高"].values[i - 1:i + 1]))
 
-        # 今日/昨日是否为局部最低
-        today_is_bottom = seg_lows[-1] == min(seg_lows[max(0, sn - 11):sn])
-        yday_is_bottom = seg_lows[-2] == min(seg_lows[max(0, sn - 12):min(sn, sn - 1 + 11)])
-
-        today_low = seg_lows[-1]
-        today_close = seg_closes[-1]
-        yesterday_close = seg_closes[-2]
-
-        # 从右往左找阶段性底部
-        max_bottom_idx = sn - 1 - max(bottom_win, min_gap)
-        found = False
-        for j in range(max_bottom_idx, bottom_win - 1, -1):
-            left_s = max(0, j - bottom_win)
-            right_e = min(sn, j + bottom_win + 1)
-            if seg_lows[j] != min(seg_lows[left_s:right_e]):
-                continue
-            age = sn - 1 - j
-            if age > max_age:
-                continue
-            support = seg_lows[j]
-
-            # 反转确认
-            if j + 1 < sn - 1:
-                post_max = max(seg_closes[j + 1:sn - 1])
-                rec = (post_max - support) / support
-                if rec < min_rec or rec > max_rec:
-                    continue
-            else:
-                continue
-
-            # 条件A：盘中假破支撑后拉回
-            if today_low < support and today_close > support and yesterday_close > support:
-                if today_is_bottom or yday_is_bottom:
-                    flags[i] = True
-                    btypes[i] = "盘中假破后拉回"
-                    supports[i] = float(support)
-                break
-
-            # 条件B：昨日跌破支撑，今日重回上方
-            if yesterday_close < support and today_close > support and seg_closes[-3] > support:
-                if today_is_bottom or yday_is_bottom:
-                    flags[i] = True
-                    btypes[i] = "收盘突破支撑确认"
-                    supports[i] = float(support)
-                break
-
-    df["假突破2B"] = flags
-    df["假突破类型"] = btypes
-    df["假突破支撑"] = supports
+    df["二次突破候选"] = flags
+    df["二次突破参考位"] = breakout_levels
 
 
 # ---------------------------------------------------------------------------

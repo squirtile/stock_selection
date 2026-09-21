@@ -20,10 +20,11 @@ from __future__ import annotations
 import argparse
 import glob
 import json
+import math
 import os
 import sys
 import traceback
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -56,6 +57,21 @@ app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1)
 app.register_blueprint(web_bp)
 
 
+def _json_safe(value: Any) -> Any:
+    """将 NaN/Infinity 递归转换为标准 JSON 可表示的 null。
+
+    浏览器的 Response.json() 严格遵循 JSON 标准，不能解析 Python 默认序列化
+    出来的 NaN。盘中历史推演的个别缺失指标会产生 NaN，因此 API 出口统一清洗。
+    """
+    if isinstance(value, float) and not math.isfinite(value):
+        return None
+    if isinstance(value, dict):
+        return {key: _json_safe(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_json_safe(item) for item in value]
+    return value
+
+
 # ---- 自定义访问日志（显示真实 IP） ----
 @app.before_request
 def log_request_info():
@@ -76,6 +92,16 @@ def _find_latest_json() -> Path | None:
     """优先读 daily_report.py 生成的 JSON。"""
     path = OUTPUT_DIR / MINI_PROGRAM_JSON
     return path if path.exists() else None
+
+
+def _load_backtest_review() -> dict:
+    """读取刷新前保留的策略命中复盘；失败时不影响选股接口。"""
+    path = OUTPUT_DIR / "strategy_backtest_latest.json"
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except (OSError, json.JSONDecodeError):
+        return {}
 
 
 def _find_latest_signal_file() -> Path | None:
@@ -233,6 +259,87 @@ def health():
     return jsonify({"status": "ok", "time": datetime.now().strftime("%Y-%m-%d %H:%M:%S")})
 
 
+@app.route("/api/intraday", methods=["GET"])
+def get_intraday_candidates():
+    """读取后台扫描器的最近结果，避免页面请求阻塞在全市场扫描上。"""
+    try:
+        # “今日全部入选”可积累超过 100 只，不能沿用实时卡片页的展示上限。
+        limit = min(max(int(request.args.get("limit", 50)), 1), 1000)
+        mode = request.args.get("mode", "live")
+        if mode in {"tail", "tail_today"}:
+            cache_file = OUTPUT_DIR / "intraday_tail_candidates.json"
+        elif mode == "tail_previous":
+            day = datetime.now().date() - timedelta(days=1)
+            while day.weekday() >= 5:
+                day -= timedelta(days=1)
+            cache_file = OUTPUT_DIR / f"intraday_tail_{day:%Y-%m-%d}.json"
+        elif mode == "all":
+            # 扫描器按交易日持久化所有曾命中的股票；与实时页的 top 20 分开读取。
+            cache_file = OUTPUT_DIR / f"intraday_hits_{datetime.now():%Y-%m-%d}.json"
+        else:
+            cache_file = OUTPUT_DIR / "intraday_candidates.json"
+        if cache_file.exists():
+            payload = json.loads(cache_file.read_text(encoding="utf-8"))
+            if mode in {"tail", "tail_today"} and payload.get("tradeDate") != datetime.now().strftime("%Y-%m-%d"):
+                return jsonify({
+                    "success": True, "tailReady": False, "tailMatched": 0,
+                    "time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"), "stocks": [],
+                    "message": "尾盘选票将在14:40开始执行，14:55前确认。",
+                })
+            if mode in {"tail", "tail_today", "tail_previous"}:
+                payload.setdefault("tailReady", True)
+                payload.setdefault("tailMatched", len(payload.get("stocks") or []))
+            if mode == "all":
+                rows = payload.get("stocks") or []
+                payload.setdefault("success", True)
+                payload["allHistory"] = True
+                payload["dayMatched"] = len(rows)
+                # 主板涨停通常为 10%，9.5% 作为盘中接近/触及涨停的统计口径。
+                payload["limitUpCount"] = sum(float(row.get("pct") or 0) >= 9.5 for row in rows)
+            if mode == "tail_previous":
+                payload["historyMode"] = True
+                # 将昨日尾盘记录与今天最新盘中行情按代码合并，保留昨日字段不变。
+                try:
+                    live = json.loads((OUTPUT_DIR / "intraday_candidates.json").read_text(encoding="utf-8"))
+                    live_map = {str(s.get("code")): s for s in live.get("stocks", []) if s.get("code")}
+                    live_map.update({str(code): quote for code, quote in (live.get("quotes") or {}).items()})
+                    for stock in payload.get("stocks", []):
+                        quote = live_map.get(str(stock.get("code")))
+                        if quote:
+                            stock["todayPct"] = quote.get("pct")
+                            stock["todayPrice"] = quote.get("price")
+                            stock["todayTime"] = live.get("time", "")
+                except (OSError, json.JSONDecodeError):
+                    pass
+            payload["stocks"] = (payload.get("stocks") or [])[:limit]
+            payload["servedFromCache"] = True
+            return jsonify(_json_safe(payload))
+
+        if mode == "all":
+            # 当天尚未产生累计命中记录时立即返回空列表，不能回退为同步全市场扫描；
+            # 否则切换子标签会被长请求拖住，并可能被旧请求结果覆盖。
+            return jsonify({
+                "success": True, "allHistory": True, "dayMatched": 0,
+                "limitUpCount": 0, "time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                "stocks": [], "message": "今日尚无盘中入选记录",
+            })
+
+        if mode in {"tail", "tail_today", "tail_previous"}:
+            empty_message = "暂无上一交易日尾盘记录" if mode == "tail_previous" else "尾盘选票将在14:40开始执行，14:55前确认。"
+            return jsonify({
+                "success": True, "tailReady": False, "tailMatched": 0,
+                "time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"), "stocks": [],
+                "message": empty_message,
+            })
+
+        # 首次部署还没有缓存时才同步扫描一次；正常交易时段由 cron 每60秒维护缓存。
+        from intraday_scanner import scan_intraday
+        return jsonify(_json_safe(scan_intraday(limit)))
+    except Exception as exc:
+        traceback.print_exc()
+        return jsonify({"success": False, "error": str(exc), "stocks": []}), 500
+
+
 @app.route("/api/stocks", methods=["GET"])
 def get_stocks():
     """
@@ -271,6 +378,7 @@ def get_stocks():
             "stocks": stocks,
             "tabGroups": tab_groups,
             "marketContext": market_context,
+            "backtestReview": _load_backtest_review(),
         })
     except Exception as e:
         traceback.print_exc()
