@@ -364,6 +364,30 @@ def prepare_hist_data(df: pd.DataFrame) -> pd.DataFrame:
     # 过去20日平均成交量，不含今日
     df["过去20日平均成交量"] = df["成交量"].shift(1).rolling(20).mean()
 
+    # 底部均量后2倍放量：基准量能严格排除信号日，至少观察前13个交易日。
+    prior_volume = df["成交量"].shift(1)
+    df["13日量能均值"] = prior_volume.rolling(13).mean()
+    df["13日量能中位数"] = prior_volume.rolling(13).median()
+    df["13日量能变异系数"] = prior_volume.rolling(13).std(ddof=0) / df["13日量能均值"]
+    df["底部放量倍数"] = df["成交量"] / df["13日量能中位数"]
+
+    bottom_high = df["最高"].rolling(60).max()
+    bottom_low = df["最低"].rolling(60).min()
+    bottom_range = (bottom_high - bottom_low).replace(0, pd.NA)
+    df["60日价格区间位置"] = (df["收盘"] - bottom_low) / bottom_range
+    candle_range = (df["最高"] - df["最低"]).replace(0, pd.NA)
+    df["当日收盘位置"] = (df["收盘"] - df["最低"]) / candle_range
+
+    # “放量突破失败”定义：放量冲过此前10日高点，但收盘重新落回该高点之下。
+    prior_10_high = df["最高"].shift(1).rolling(10).max()
+    prior_13_median = df["成交量"].shift(1).rolling(13).median()
+    failed_probe = (
+        (df["成交量"] >= prior_13_median * 1.5)
+        & (df["最高"] > prior_10_high * 1.005)
+        & (df["收盘"] <= prior_10_high)
+    )
+    df["前期放量突破失败次数"] = failed_probe.shift(1).rolling(30, min_periods=1).sum()
+
     # 过去20日日均成交额，含今日
     df["过去20日日均成交额"] = df["成交额"].rolling(20).mean()
 
@@ -1458,6 +1482,12 @@ def build_signal_info(latest: pd.Series, breakthrough_strategies: list[str], mai
         "今日成交量": latest["成交量"],
         "过去20日平均成交量": latest["过去20日平均成交量"],
         "量比": latest["成交量"] / latest["过去20日平均成交量"],
+        "13日量能均值": latest.get("13日量能均值", pd.NA),
+        "13日量能中位数": latest.get("13日量能中位数", pd.NA),
+        "13日量能变异系数": latest.get("13日量能变异系数", pd.NA),
+        "底部放量倍数": latest.get("底部放量倍数", pd.NA),
+        "60日价格区间位置": latest.get("60日价格区间位置", pd.NA),
+        "前期放量突破失败次数": latest.get("前期放量突破失败次数", pd.NA),
 
         "过去20日日均成交额": latest["过去20日日均成交额"],
         "过去20日日均成交额_万元": latest["过去20日日均成交额"] / 10000,

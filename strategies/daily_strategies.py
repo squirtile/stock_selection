@@ -50,6 +50,47 @@ class BottomVolumeReversalStrategy(BaseDailyStrategy):
             and row["成交量"] > row["过去20日平均成交量"] * 2
         )
 
+
+class BottomStableVolumeExpansionStrategy(BaseDailyStrategy):
+    """底部长期均量后首次温和放量启动，前期失败试盘作为质量提示。"""
+
+    name = "底部均量后2倍放量"
+    category = "突破反转"
+    group = "放量启动"
+
+    _required = (
+        "开盘", "收盘", "涨跌幅", "13日量能变异系数", "底部放量倍数",
+        "60日价格区间位置", "当日收盘位置", "前期放量突破失败次数",
+    )
+
+    def match(self, row: pd.Series) -> bool:
+        if any(field not in row.index or pd.isna(row[field]) for field in self._required):
+            return False
+        return bool(
+            float(row["13日量能变异系数"]) <= 0.25
+            and float(row["底部放量倍数"]) >= 2.0
+            and float(row["60日价格区间位置"]) <= 0.35
+            and float(row["涨跌幅"]) >= 1.0
+            and float(row["涨跌幅"]) <= 7.0
+            and float(row["收盘"]) > float(row["开盘"])
+            and float(row["当日收盘位置"]) >= 0.70
+        )
+
+    def evaluate(self, row: pd.Series) -> StrategySignal | None:
+        if not self.enabled:
+            return None
+        try:
+            if not self.match(row):
+                return None
+            multiple = float(row["底部放量倍数"])
+            variation = float(row["13日量能变异系数"]) * 100
+            attempts = int(float(row["前期放量突破失败次数"]))
+            probe_note = f"，前期试盘{attempts}次" if attempts else ""
+            reason = f"13日量能波动{variation:.1f}%，放量{multiple:.2f}倍{probe_note}"
+            return StrategySignal(name=self.name, category=self.category, reason=reason)
+        except (TypeError, ValueError):
+            return None
+
 class MainPullbackStartStrategy(BaseDailyStrategy):
     """主升策略3：缩量回调启动。"""
 

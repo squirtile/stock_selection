@@ -713,6 +713,20 @@ def _safe_float(val):
         return None
 
 
+def _bottom_stable_volume_metrics(row, strategy_types: list[dict]) -> dict:
+    """仅为“底部均量后2倍放量”卡片附加可读的量能诊断指标。"""
+    if not any(item.get("name") == "底部均量后2倍放量" for item in strategy_types):
+        return {}
+    multiple = _safe_float(row.get("底部放量倍数"))
+    variation = _safe_float(row.get("13日量能变异系数"))
+    failed_count = _safe_float(row.get("前期放量突破失败次数"))
+    return {
+        "bottomVolumeMultiple": multiple,
+        "bottomVolumeVariationPct": round(variation * 100, 2) if variation is not None else None,
+        "bottomFailedProbeCount": int(failed_count) if failed_count is not None else 0,
+    }
+
+
 # ── 行业→概念映射（与 tools/market_context.py 保持同步）──
 MARKET_INDUSTRY_TO_CONCEPT = {
     "半导体": "芯片概念", "元器件": "消费电子概念", "软件服务": "人工智能",
@@ -892,6 +906,7 @@ def build_mini_program_json(
             "mlScore": None,       # 待 ML 数据补齐
             "mlModel": "",         # 命中的 ML 模型名
             "mlModels": [],        # ML 模型列表
+            **_bottom_stable_volume_metrics(row, strategy_types),
         }
 
     # ---------- 从 ML 扫描结果读取 ----------

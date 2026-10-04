@@ -213,6 +213,10 @@ def print_stock_table(df: pd.DataFrame, max_rows: int = 50):
         "市值_亿元",
         "量比",
         "15日涨停",
+        "13日量能变异系数",
+        "底部放量倍数",
+        "60日价格区间位置",
+        "前期放量突破失败次数",
     ]
 
     show_cols = [col for col in show_cols if col in df.columns]
@@ -570,6 +574,10 @@ def prepare_signal_export_df(signal_df: pd.DataFrame, stock_theme_map: dict) -> 
         "总市值_亿元",
         "量比",
         "15日涨停",
+        "13日量能变异系数",
+        "底部放量倍数",
+        "60日价格区间位置",
+        "前期放量突破失败次数",
     ]
 
     export_cols = [col for col in export_cols if col in signal_df.columns]

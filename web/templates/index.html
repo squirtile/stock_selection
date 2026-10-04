@@ -142,6 +142,14 @@ a{text-decoration:none;color:inherit}
 .money-item .mi-net{font-size:16px;font-weight:700;margin-top:2px}
 @media(max-width:480px){.container{padding:0 8px 30px}.hero h1{font-size:22px}.stock-card{padding:10px 12px;gap:8px}}
 
+.chart-tabs{display:flex;align-items:center;gap:6px;margin-bottom:10px;border-bottom:1px solid #e2e8f0}
+.chart-tab{border:0;background:transparent;color:#64748b;font-size:13px;padding:8px 12px;cursor:pointer;border-bottom:2px solid transparent}
+.chart-tab.active{color:#4f6ef7;font-weight:700;border-bottom-color:#4f6ef7}
+.chart-panel{min-height:220px}
+.money-flow-summary{display:flex;align-items:center;flex-wrap:wrap;gap:10px;margin:4px 0 10px;font-size:13px;color:#64748b}
+.money-flow-summary .amount{font-size:18px;font-weight:700}
+.money-flow-canvas{display:block;width:100%;height:auto;border-radius:8px;background:#fff}
+
 /* ===== 平板 (768-1024px) ===== */
 @media(min-width:768px){
     .container{max-width:960px;padding:0 18px 40px}
@@ -260,7 +268,7 @@ a{text-decoration:none;color:inherit}
 <div class="accent accent-{{ loop.index0 % 4 }}"></div>
 <div class="card-info">
 <div class="card-line1"><span class="name">{{ s.name }}</span><span class="code">{{ s.code }}</span></div>
-<div class="card-line2">{% if s.price %}<span class="price">¥{{ s.price }}</span>{% endif %}{% if s.pct is not none %}<span class="pct{% if s.pct >= 0 %} pct-up{% else %} pct-down{% endif %}">{{ '%+.2f'|format(s.pct) }}%</span>{% endif %}{% if s.industry %}<span class="tag">{{ s.industry }}</span>{% endif %}{% if s.marketCap %}<span class="tag">{{ s.marketCap }}亿</span>{% endif %}{% if s.strategyCount %}<span class="tag">{{ s.strategyCount }}个策略</span>{% endif %}{% if s.sectorLabel %}<span class="tag">{{ s.sectorLabel }}</span>{% endif %}</div>
+<div class="card-line2">{% if s.price %}<span class="price">¥{{ s.price }}</span>{% endif %}{% if s.pct is not none %}<span class="pct{% if s.pct >= 0 %} pct-up{% else %} pct-down{% endif %}">{{ '%+.2f'|format(s.pct) }}%</span>{% endif %}{% if s.industry %}<span class="tag">{{ s.industry }}</span>{% endif %}{% if s.marketCap %}<span class="tag">{{ s.marketCap }}亿</span>{% endif %}{% if s.strategyCount %}<span class="tag">{{ s.strategyCount }}个策略</span>{% endif %}{% if s.sectorLabel %}<span class="tag">{{ s.sectorLabel }}</span>{% endif %}{% if s.bottomVolumeMultiple is defined and s.bottomVolumeMultiple is not none %}<span class="tag">放量 {{ '%.2f'|format(s.bottomVolumeMultiple) }}倍</span><span class="tag">13日量能波动 {{ '%.1f'|format(s.bottomVolumeVariationPct) }}%</span><span class="tag">前期试盘 {{ s.bottomFailedProbeCount }}次</span>{% endif %}</div>
 <div class="card-line3">{% for st in s.strategyTypes %}<span class="s-tag">{{ st.group }}·{{ st.name }}</span>{% endfor %}{% for ml in s.mlModels %}<span class="m-tag">🤖 {{ ml.displayName }}</span>{% endfor %}</div>
 <div class="card-hint">💡 点击展开最近30日K线图</div>
 </div>
@@ -430,6 +438,12 @@ if(k==='intraday'){const sub=document.querySelector('#intradaySubtabs .money-sub
   if(defaultHead)sortBy(defaultHead,defaultHead.dataset.defaultSort);
 })();
 
+function rememberMainMoneyFlow(stock){
+  if(stock.mainNetInflow==null||stock.mainNetRatio==null||!(stock.mainMoneyFlowHistory||[]).length)return false;
+  window._intradayMoneyFlows=window._intradayMoneyFlows||{};
+  window._intradayMoneyFlows[String(stock.code)]=stock;
+  return true;
+}
 function renderTailIntraday(d,c){
   const esc=x=>String(x==null?'':x).replace(/[&<>"']/g,ch=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[ch]));
   const fmt=(x,n=2)=>Number(x||0).toFixed(n),color=v=>Number(v)>=0?'#ef4444':'#22c55e';
@@ -447,13 +461,20 @@ function renderAllIntraday(d,c){
   const pctOf=s=>Number(s.closePct!=null?s.closePct:s.pct||0);
   const scoreOf=s=>Number(s.score||0);
   const timeOf=s=>String(s.firstHitTime||'');
+  const strategiesOf=s=>[...(s.chanlunBuySignals||[]).map(x=>String(x.name||x.type||'')).filter(Boolean),...(s.learnedMatch?['低涨幅后续触板']:[]),...(s.bigYangPullbackMatch?['大阳回调不破10日线']:[]),...(s.longShadowMatch?['长上下影线']:[])];
+  const strategyCounts=new Map();
+  rows.forEach(s=>strategiesOf(s).forEach(name=>strategyCounts.set(name,(strategyCounts.get(name)||0)+1)));
+  const strategyOptions=[...strategyCounts].sort((a,b)=>a[0].localeCompare(b[0],'zh-CN'));
   const render=state=>{
     const sort=state.key, direction=state.direction;
     const factor=direction==='asc'?1:-1;
-    const sorted=rows.slice().sort((a,b)=>sort==='pct' ? (pctOf(a)-pctOf(b))*factor : sort==='score' ? (scoreOf(a)-scoreOf(b))*factor : timeOf(a).localeCompare(timeOf(b))*factor);
+    const selectedStrategy=window._intradayAllStrategy||'';
+    const filtered=selectedStrategy?rows.filter(s=>strategiesOf(s).includes(selectedStrategy)):rows;
+    const sorted=filtered.slice().sort((a,b)=>sort==='pct' ? (pctOf(a)-pctOf(b))*factor : sort==='score' ? (scoreOf(a)-scoreOf(b))*factor : timeOf(a).localeCompare(timeOf(b))*factor);
     const limitUps=sorted.filter(s=>pctOf(s)>=9.5).length;
-    let h='<div class="update-tip">今日全部盘中入选 · '+esc(d.updatedAt||d.time||'')+' · 累计 '+sorted.length+' 只 · 涨停/近涨停 '+limitUps+' 只 <span style="color:#92400e">（涨幅 ≥ 9.5%）</span></div>'
-      +'<div style="margin:10px 0;display:flex;flex-wrap:wrap;gap:8px"><button type="button" class="filter-chip '+(sort==='time'?'active':'')+'" data-all-sort="time">入选时间 '+(sort==='time'?(direction==='asc'?'↑ 早→晚':'↓ 晚→早'):'↕')+'</button><button type="button" class="filter-chip '+(sort==='pct'?'active':'')+'" data-all-sort="pct">涨幅 '+(sort==='pct'?(direction==='desc'?'↓ 高→低':'↑ 低→高'):'↕')+'</button><button type="button" class="filter-chip '+(sort==='score'?'active':'')+'" data-all-sort="score">评分 '+(sort==='score'?(direction==='desc'?'↓ 高→低':'↑ 低→高'):'↕')+'</button></div><div class="stock-list">';
+    const options='<option value="">全部策略（'+rows.length+'只）</option>'+strategyOptions.map(([name,count])=>'<option value="'+esc(name)+'"'+(name===selectedStrategy?' selected':'')+'>'+esc(name)+'（'+count+'只）</option>').join('');
+    let h='<div class="update-tip">今日全部盘中入选 · '+esc(d.updatedAt||d.time||'')+' · 显示 '+sorted.length+'/'+rows.length+' 只 · 涨停/近涨停 '+limitUps+' 只 <span style="color:#92400e">（涨幅 ≥ 9.5%）</span></div>'
+      +'<div style="margin:10px 0;display:flex;flex-wrap:wrap;gap:8px;align-items:center"><label style="font-size:13px;color:#475569">策略：<select data-all-strategy style="padding:7px 10px;border:1px solid #dbe4f0;border-radius:8px;background:#fff;color:#334155">'+options+'</select></label><button type="button" class="filter-chip '+(sort==='time'?'active':'')+'" data-all-sort="time">入选时间 '+(sort==='time'?(direction==='asc'?'↑ 早→晚':'↓ 晚→早'):'↕')+'</button><button type="button" class="filter-chip '+(sort==='pct'?'active':'')+'" data-all-sort="pct">涨幅 '+(sort==='pct'?(direction==='desc'?'↓ 高→低':'↑ 低→高'):'↕')+'</button><button type="button" class="filter-chip '+(sort==='score'?'active':'')+'" data-all-sort="score">评分 '+(sort==='score'?(direction==='desc'?'↓ 高→低':'↑ 低→高'):'↕')+'</button></div><div class="stock-list">';
     sorted.forEach((s,index)=>{
       const pct=pctOf(s), selected=s.selectedPct!=null?'<span class="tag">入选时 '+(Number(s.selectedPct)>=0?'+':'')+fmt(s.selectedPct)+'%</span>':'';
       const sec=s.sector||{}, sectorPct=Number(sec.pct||0), sectorFlow=Number(sec.mainNetRatio||0);
@@ -461,7 +482,8 @@ function renderAllIntraday(d,c){
       const sectorFlowTag=sec.name?'<span class="tag">板块资金净流 '+(sectorFlow>=0?'+':'')+fmt(sectorFlow,1)+'%</span>':'';
       const status=s.currentMatch?'<span class="s-tag" style="background:#fef2f2;color:#ef4444;border-color:#fecaca">当前命中</span>':'<span class="s-tag" style="background:#f8fafc;color:#64748b;border-color:#e2e8f0">今日曾命中</span>';
       const strategies=(s.chanlunBuySignals||[]).map(x=>'<span class="s-tag">'+esc(x.name)+'</span>').join('')+(s.learnedMatch?'<span class="m-tag">低涨幅后续触板</span>':'');
-      h+='<div class="stock-card" data-code="'+esc(s.code)+'" onclick="toggleKline(this)"><div class="accent accent-'+(index%4)+'"></div><div class="card-info"><div class="card-line1"><span class="name">'+esc(s.name)+'</span><span class="code">'+esc(s.code)+'</span></div><div class="card-line2"><span class="price">¥'+fmt(s.price)+'</span><span class="pct '+(pct>=0?'pct-up':'pct-down')+'">'+(pct>=0?'+':'')+fmt(pct)+'%</span><span class="tag">入选时间 '+esc(s.firstHitTime||'--')+'</span>'+selected+'<span class="tag">最近命中 '+esc(s.lastHitTime||'--')+'</span>'+sectorTag+sectorFlowTag+'<span class="tag">量比 '+fmt(s.volumeRatio,1)+'</span></div><div class="card-line3">'+status+strategies+'</div><div class="card-hint">'+esc(s.industry||'行业未识别')+' · 命中 '+Number(s.hitScans||0)+' 次</div></div><div class="card-score"><div class="snum '+(s.score>=80?'score-a':s.score>=60?'score-b':'score-c')+'">'+Number(s.score||0)+'</div><div class="slabel">分</div></div></div>';
+      const moneyAttr=rememberMainMoneyFlow(s)?' data-money-flow="1"':'';
+      h+='<div class="stock-card" data-code="'+esc(s.code)+'"'+moneyAttr+' onclick="toggleKline(this)"><div class="accent accent-'+(index%4)+'"></div><div class="card-info"><div class="card-line1"><span class="name">'+esc(s.name)+'</span><span class="code">'+esc(s.code)+'</span></div><div class="card-line2"><span class="price">¥'+fmt(s.price)+'</span><span class="pct '+(pct>=0?'pct-up':'pct-down')+'">'+(pct>=0?'+':'')+fmt(pct)+'%</span><span class="tag">入选时间 '+esc(s.firstHitTime||'--')+'</span>'+selected+'<span class="tag">最近命中 '+esc(s.lastHitTime||'--')+'</span>'+sectorTag+sectorFlowTag+'<span class="tag">量比 '+fmt(s.volumeRatio,1)+'</span></div><div class="card-line3">'+status+strategies+'</div><div class="card-hint">'+esc(s.industry||'行业未识别')+' · 命中 '+Number(s.hitScans||0)+' 次</div></div><div class="card-score"><div class="snum '+(s.score>=80?'score-a':s.score>=60?'score-b':'score-c')+'">'+Number(s.score||0)+'</div><div class="slabel">分</div></div></div>';
     });
     if(!sorted.length)h+='<div class="empty"><div class="icon">📭</div><div class="text">今日尚无盘中入选记录</div></div>';
     c.innerHTML=h+'</div>';
@@ -471,6 +493,11 @@ function renderAllIntraday(d,c){
       window._intradayAllSort=next;
       render(next);
     }));
+    const strategySelect=c.querySelector('[data-all-strategy]');
+    if(strategySelect)strategySelect.addEventListener('change',()=>{
+      window._intradayAllStrategy=strategySelect.value;
+      render(state);
+    });
   };
   const saved=window._intradayAllSort;
   render(saved&&typeof saved==='object' ? saved : {key:'time', direction:'asc'});
@@ -532,7 +559,8 @@ function loadIntraday(mode='live'){
       const hitStatus=s.currentMatch?'<span class="s-tag" style="background:#fef2f2;color:#ef4444;border-color:#fecaca">当前命中</span>':'<span class="s-tag" style="background:#f8fafc;color:#64748b;border-color:#e2e8f0">今日曾命中</span>';
       const closeBadge=s.closePct!=null?'<span class="tag">收盘涨幅 '+(Number(s.closePct)>=0?'+':'')+fmt(s.closePct)+'%</span>':'<span class="tag">收盘涨幅 待收盘</span>';
       const selectedBadge=s.selectedPct!=null?'<span class="tag">选中时 '+(Number(s.selectedPct)>=0?'+':'')+fmt(s.selectedPct)+'%</span>':'';
-      h+='<div class="stock-card" data-code="'+esc(s.code)+'" onclick="toggleKline(this)">'
+      const moneyAttr=rememberMainMoneyFlow(s)?' data-money-flow="1"':'';
+      h+='<div class="stock-card" data-code="'+esc(s.code)+'"'+moneyAttr+' onclick="toggleKline(this)">'
         +'<div class="accent accent-'+(index%4)+'"></div><div class="card-info">'
         +'<div class="card-line1"><span class="name">'+esc(s.name)+'</span><span class="code">'+esc(s.code)+(s.verified?' · 多源校验':'')+'</span></div>'
         +'<div class="card-line2"><span class="price">¥'+fmt(s.price)+'</span><span class="pct '+(Number(s.pct)>=0?'pct-up':'pct-down')+'">'+(Number(s.pct)>=0?'+':'')+fmt(s.pct)+'%</span>'
@@ -664,8 +692,70 @@ filterStocks(this.dataset.parent,this.dataset.key)
 
 function filterStocks(l1,l2){const TOP=10;const cards=document.querySelectorAll('#stockList .stock-card');let vis=[];cards.forEach(card=>{const cats=JSON.parse(card.dataset.categories||'[]'),sts=JSON.parse(card.dataset.strategytypes||'[]'),mls=JSON.parse(card.dataset.mlmodels||'[]');let s=false;if(l1==='策略信号'){if(cats.includes('策略信号'))s=l2?sts.some(t=>t.groupKey===l2||t.name===l2):true}else if(l1==='ML模型信号'){if(cats.includes('ML模型信号'))s=l2?mls.some(m=>m.key===l2):true}else if(l2){const chip=document.querySelector('#level2Tabs .sub-chip[data-key="'+l2+'"]');const raw=chip?chip.textContent:'',label=raw.replace(/\d+$/,'').replace(/[·\s]/g,'').trim();s=cats.includes(l1)&&sts.some(t=>t.name.replace(/[·\s]/g,'')===label)}else{s=cats.includes(l1)}if(s)vis.push({card,score:parseInt(card.dataset.score)||0})});if(l2){vis.sort((a,b)=>b.score-a.score);vis=vis.slice(0,TOP)}cards.forEach(c=>c.style.display='none');vis.forEach(v=>v.card.style.display='')}
 
-// === K线（插入到卡片外部，跨整行全宽）===
-function toggleKline(card){const code=card.dataset.code;let area=document.querySelector('.kline-area[data-code="'+code+'"]');if(area){area.remove();return}area=document.createElement('div');area.className='kline-area';area.dataset.code=code;area.style.cssText='margin:0 0 8px 0;padding:12px 14px;background:#fafbfc;border-radius:10px;border:1px solid #e0e0e0';const hdr=document.createElement('div');hdr.style.cssText='display:flex;align-items:center;gap:8px;margin-bottom:8px;font-size:12px;color:#666';hdr.innerHTML='<span style="font-weight:700;color:#1a1a2e">'+code+'</span> 最近30日K线 <span style="font-size:10px;color:#aaa;cursor:pointer;margin-left:auto" onclick="this.closest(\'.kline-area\').remove()">✕ 收起</span>';area.appendChild(hdr);const img=document.createElement('img');img.style.width='100%';img.style.borderRadius='6px';area.appendChild(img);card.after(area);fetch('/api/stock/'+code+'/kline').then(r=>r.json()).then(d=>{if(d.success&&d.data.length)drawKline(code,d.data,img);else img.alt='无数据'}).catch(()=>{img.alt='加载失败'})}
+// === 日线/资金走势（插入到卡片外部，跨整行全宽）===
+function toggleKline(card){
+  const code=card.dataset.code;
+  let area=document.querySelector('.kline-area[data-code="'+code+'"]');
+  if(area){area.remove();return}
+  area=document.createElement('div');area.className='kline-area';area.dataset.code=code;
+  area.style.cssText='margin:0 0 8px 0;padding:12px 14px;background:#fafbfc;border-radius:10px;border:1px solid #e0e0e0';
+  const hdr=document.createElement('div');hdr.style.cssText='display:flex;align-items:center;margin-bottom:4px;font-size:12px;color:#666';
+  const codeLabel=document.createElement('span');codeLabel.style.cssText='font-weight:700;color:#1a1a2e';codeLabel.textContent=code;
+  const close=document.createElement('button');close.type='button';close.style.cssText='border:0;background:transparent;font-size:11px;color:#94a3b8;cursor:pointer;margin-left:auto';close.textContent='✕ 收起';close.addEventListener('click',()=>area.remove());
+  hdr.append(codeLabel,close);area.appendChild(hdr);
+
+  const tabs=document.createElement('div');tabs.className='chart-tabs';
+  const dailyTab=document.createElement('button');dailyTab.type='button';dailyTab.className='chart-tab active';dailyTab.textContent='日线走势';
+  tabs.appendChild(dailyTab);
+  const dailyPanel=document.createElement('div');dailyPanel.className='chart-panel';
+  const img=document.createElement('img');img.style.width='100%';img.style.borderRadius='6px';dailyPanel.appendChild(img);
+  let moneyTab=null,moneyPanel=null;
+  const moneyData=card.dataset.moneyFlow==='1'&&(window._intradayMoneyFlows||{})[code];
+  if(moneyData){
+    moneyTab=document.createElement('button');moneyTab.type='button';moneyTab.className='chart-tab';moneyTab.textContent='主力资金走势';tabs.appendChild(moneyTab);
+    moneyPanel=document.createElement('div');moneyPanel.className='chart-panel';moneyPanel.style.display='none';
+    drawMainMoneyFlow(moneyData,moneyPanel);
+    const selectTab=showMoney=>{
+      dailyTab.classList.toggle('active',!showMoney);moneyTab.classList.toggle('active',showMoney);
+      dailyPanel.style.display=showMoney?'none':'block';moneyPanel.style.display=showMoney?'block':'none';
+    };
+    dailyTab.addEventListener('click',()=>selectTab(false));moneyTab.addEventListener('click',()=>selectTab(true));
+  }
+  area.append(tabs,dailyPanel);if(moneyPanel)area.appendChild(moneyPanel);card.after(area);
+  fetch('/api/stock/'+code+'/kline').then(r=>r.json()).then(d=>{if(d.success&&d.data.length)drawKline(code,d.data,img);else img.alt='无数据'}).catch(()=>{img.alt='加载失败'})
+}
+function formatMainMoney(value){
+  const amount=Math.abs(Number(value)||0);
+  return amount>=1e8?(amount/1e8).toFixed(2)+'亿':(amount/1e4).toFixed(0)+'万'
+}
+function drawMainMoneyFlow(stock,panel){
+  const history=(stock.mainMoneyFlowHistory||[]).filter(point=>Number.isFinite(Number(point.mainNetInflow)));
+  const amount=Number(stock.mainNetInflow||0),ratio=Number(stock.mainNetRatio||0),positive=amount>=0;
+  const tone=positive?'#ef4444':'#16a34a',direction=positive?'净流入':'净流出';
+  const summary=document.createElement('div');summary.className='money-flow-summary';
+  const amountEl=document.createElement('span');amountEl.className='amount';amountEl.style.color=tone;amountEl.textContent='主力'+direction+' '+(positive?'+':'-')+formatMainMoney(amount);
+  const ratioEl=document.createElement('span');ratioEl.style.color=tone;ratioEl.textContent='占比 '+(ratio>=0?'+':'')+ratio.toFixed(2)+'%';
+  const stateEl=document.createElement('span');stateEl.textContent=String(stock.mainMoneyTrend||direction);
+  const timeEl=document.createElement('span');timeEl.textContent='更新时间 '+String(stock.mainMoneyUpdatedAt||'--')+(stock.mainMoneyStale?' · 数据暂未更新':'');
+  summary.append(amountEl,ratioEl,stateEl,timeEl);panel.appendChild(summary);
+  if(!history.length){const empty=document.createElement('div');empty.className='empty';empty.textContent='暂无当天主力资金走势';panel.appendChild(empty);return}
+  const canvas=document.createElement('canvas');canvas.className='money-flow-canvas';canvas.setAttribute('role','img');canvas.setAttribute('aria-label','当天累计主力资金走势');
+  const dpr=2,w=900,h=330;canvas.width=w*dpr;canvas.height=h*dpr;panel.appendChild(canvas);
+  const ctx=canvas.getContext('2d');ctx.scale(dpr,dpr);
+  const values=history.map(point=>Number(point.mainNetInflow)),rawMin=Math.min(0,...values),rawMax=Math.max(0,...values);
+  const padding=(rawMax-rawMin||Math.max(Math.abs(rawMax),1))*.12,min=rawMin-padding,max=rawMax+padding,range=max-min||1;
+  const pad={left:72,right:18,top:18,bottom:36},plotW=w-pad.left-pad.right,plotH=h-pad.top-pad.bottom;
+  const x=index=>pad.left+(history.length===1?plotW/2:index/(history.length-1)*plotW),y=value=>pad.top+(max-value)/range*plotH;
+  ctx.clearRect(0,0,w,h);ctx.font='11px sans-serif';ctx.fillStyle='#64748b';
+  for(let i=0;i<5;i++){
+    const value=max-range*i/4,py=y(value);ctx.strokeStyle='#e2e8f0';ctx.lineWidth=1;ctx.beginPath();ctx.moveTo(pad.left,py);ctx.lineTo(w-pad.right,py);ctx.stroke();
+    const label=(Math.abs(value)>=1e8?(value/1e8).toFixed(2)+'亿':(value/1e4).toFixed(0)+'万');ctx.fillText(label,4,py+4)
+  }
+  const zeroY=y(0);ctx.strokeStyle='#94a3b8';ctx.setLineDash([5,4]);ctx.beginPath();ctx.moveTo(pad.left,zeroY);ctx.lineTo(w-pad.right,zeroY);ctx.stroke();ctx.setLineDash([]);
+  ctx.strokeStyle=tone;ctx.lineWidth=2.5;ctx.beginPath();history.forEach((point,index)=>{const px=x(index),py=y(Number(point.mainNetInflow));if(index===0)ctx.moveTo(px,py);else ctx.lineTo(px,py)});ctx.stroke();
+  history.forEach((point,index)=>{if(index!==0&&index!==history.length-1)return;ctx.fillStyle=tone;ctx.beginPath();ctx.arc(x(index),y(Number(point.mainNetInflow)),3.5,0,Math.PI*2);ctx.fill()});
+  ctx.fillStyle='#64748b';ctx.font='11px sans-serif';const first=String(history[0].time||''),last=String(history[history.length-1].time||'');ctx.fillText(first,pad.left,h-10);ctx.fillText(last,w-pad.right-ctx.measureText(last).width,h-10)
+}
 function drawKline(code,klines,imgEl){
   const cvs=document.createElement('canvas');
   const dpr=2,w=700,h=370;

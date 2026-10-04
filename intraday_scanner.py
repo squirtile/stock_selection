@@ -10,6 +10,7 @@ import argparse
 import gzip
 import json
 import re
+import signal
 import statistics
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -39,8 +40,14 @@ EASTMONEY_URLS = (
 EASTMONEY_TOKEN = "bd1d9ddb04089700cf9c27f6f7426281"
 EASTMONEY_MARKET_URL = "https://push2ex.eastmoney.com/getTopicZDFenBu"
 EASTMONEY_KLINE_URL = "https://push2his.eastmoney.com/api/qt/stock/kline/get"
+EASTMONEY_QUOTE_LIST_URL = "https://push2.eastmoney.com/api/qt/ulist.np/get"
 CHANLUN_SCAN_LIMIT = 12
 INTRADAY_MIN_SCORE = 50
+SCAN_DEADLINE_SECONDS = 180
+
+
+class _ScanDeadlineExceeded(BaseException):
+    """整轮扫描超过硬截止时间；继承 BaseException，避免被数据源降级分支吞掉。"""
 
 
 def _number(value: Any, default: float = 0.0) -> float:
@@ -48,6 +55,16 @@ def _number(value: Any, default: float = 0.0) -> float:
         return float(value)
     except (TypeError, ValueError):
         return default
+
+
+def _optional_number(value: Any) -> float | None:
+    """解析可缺失行情字段；缺失不能伪装成资金净流入 0。"""
+    if value in (None, "", "-"):
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
 
 
 def _market_prefix(code: str) -> str:
@@ -61,13 +78,25 @@ def _is_trading_session(now: datetime) -> bool:
     return clock_time(9, 30) <= current <= clock_time(11, 30) or clock_time(13, 0) <= current <= clock_time(15, 0)
 
 
+def _public_get(url: str, *, params: dict[str, Any] | None = None, headers: dict[str, str] | None = None, timeout: int = 8) -> requests.Response:
+    """公开行情直连优先；直连不可用时回退系统代理。"""
+    session = requests.Session()
+    try:
+        session.trust_env = False
+        return session.get(url, params=params, headers=headers, timeout=timeout)
+    except requests.RequestException:
+        return requests.get(url, params=params, headers=headers, timeout=timeout)
+    finally:
+        session.close()
+
+
 def _eastmoney_json(params: dict[str, Any]) -> dict[str, Any]:
-    """主行情域名不可达时回退到东方财富免费延迟域名。"""
+    """请求东方财富行情，强制直连以避开本地代理的间歇性故障。"""
     errors = []
     headers = {**HEADERS, "Referer": "https://quote.eastmoney.com/"}
     for url in EASTMONEY_URLS:
         try:
-            response = requests.get(url, params=params, headers=headers, timeout=12)
+            response = _public_get(url, params=params, headers=headers, timeout=8)
             response.raise_for_status()
             return response.json()
         except (requests.RequestException, ValueError) as exc:
@@ -81,7 +110,7 @@ def fetch_eastmoney() -> list[dict[str, Any]]:
         "pn": 1, "pz": 100, "po": 1, "np": 1, "fltt": 2, "invt": 2,
         "fid": "f10", "ut": EASTMONEY_TOKEN,
         "fs": "m:1+t:2,m:0+t:6",
-        "fields": "f2,f3,f5,f6,f7,f8,f10,f12,f14,f15,f16,f17,f18,f20,f100",
+        "fields": "f2,f3,f5,f6,f7,f8,f10,f12,f14,f15,f16,f17,f18,f20,f62,f100,f184",
     }
     items = []
     # 正常盘中通常数页即可覆盖全部量比>=1.5股票；20页为访问量保护上限。
@@ -102,7 +131,7 @@ def fetch_eastmoney() -> list[dict[str, Any]]:
         volume_ratio = _number(raw.get("f10"))
         if not is_main_board or not name or "ST" in name.upper() or price <= 0 or prev <= 0 or volume_ratio < 1.5:
             continue
-        result.append({
+        stock = {
             "code": code, "name": name, "price": price, "pct": _number(raw.get("f3")),
             "volume": _number(raw.get("f5")), "amount": _number(raw.get("f6")),
             "amplitude": _number(raw.get("f7")), "turnover": _number(raw.get("f8")),
@@ -110,7 +139,95 @@ def fetch_eastmoney() -> list[dict[str, Any]]:
             "low": _number(raw.get("f16")), "open": _number(raw.get("f17")), "prevClose": prev,
             "marketCap": _number(raw.get("f20")) / 100_000_000,
             "industry": str(raw.get("f100") or "").strip("- "), "source": "东方财富",
-        })
+        }
+        main_net_inflow = _optional_number(raw.get("f62"))
+        main_net_ratio = _optional_number(raw.get("f184"))
+        if main_net_inflow is not None and main_net_ratio is not None:
+            stock["mainNetInflow"] = main_net_inflow
+            stock["mainNetRatio"] = main_net_ratio
+        result.append(stock)
+    return result
+
+
+def fetch_eastmoney_main_money(codes: list[str], batch_size: int = 50) -> dict[str, dict[str, float]]:
+    """批量补充个股主力净额/占比，供腾讯主行情降级路径使用。"""
+    unique_codes = list(dict.fromkeys(str(code).zfill(6) for code in codes if str(code).strip()))
+    result: dict[str, dict[str, float]] = {}
+    for start in range(0, len(unique_codes), batch_size):
+        batch = unique_codes[start:start + batch_size]
+        secids = ",".join(("1." if code.startswith("6") else "0.") + code for code in batch)
+        response = _public_get(
+            EASTMONEY_QUOTE_LIST_URL,
+            params={
+                "fltt": 2, "secids": secids, "fields": "f12,f62,f184",
+                "ut": EASTMONEY_TOKEN,
+            },
+            headers={**HEADERS, "Referer": "https://quote.eastmoney.com/"}, timeout=8,
+        )
+        response.raise_for_status()
+        payload = response.json()
+        data = payload.get("data") if isinstance(payload, dict) else None
+        rows = data.get("diff") if isinstance(data, dict) else []
+        if not isinstance(rows, list):
+            rows = []
+        for raw in rows:
+            if not isinstance(raw, dict):
+                continue
+            code = str(raw.get("f12") or "").zfill(6)
+            amount = _optional_number(raw.get("f62"))
+            ratio = _optional_number(raw.get("f184"))
+            if code and amount is not None and ratio is not None:
+                result[code] = {"mainNetInflow": amount, "mainNetRatio": ratio}
+    return result
+
+
+def fetch_tencent_market(batch_size: int = 80) -> list[dict[str, Any]]:
+    """东方财富个股列表不可用时，用本地股票池批量读取腾讯实时行情。"""
+    codes = sorted(
+        path.name.removesuffix("_bs.csv")
+        for path in HIST_ROOT.glob("*_bs.csv")
+        if path.name[:6].isdigit()
+        and path.name[:6].startswith(("600", "601", "603", "605", "000", "001", "002", "003"))
+    )
+    result: list[dict[str, Any]] = []
+    headers = {**HEADERS, "Referer": "https://gu.qq.com/"}
+    for start in range(0, len(codes), batch_size):
+        batch = codes[start:start + batch_size]
+        symbols = ",".join(_market_prefix(code) + code for code in batch)
+        response = _public_get("https://qt.gtimg.cn/q=" + symbols, headers=headers, timeout=6)
+        response.raise_for_status()
+        text = response.content.decode("gbk", errors="ignore")
+        for line in text.split(";"):
+            if '="' not in line:
+                continue
+            fields = line.split('="', 1)[1].strip().strip('"').split("~")
+            if len(fields) <= 49:
+                continue
+            code, name = str(fields[2]).zfill(6), str(fields[1]).strip()
+            price, prev = _number(fields[3]), _number(fields[4])
+            volume_ratio = _number(fields[49])
+            if not name or "ST" in name.upper() or price <= 0 or prev <= 0 or volume_ratio < 1.5:
+                continue
+            high, low = _number(fields[33]), _number(fields[34])
+            result.append({
+                "code": code, "name": name, "price": price, "pct": _number(fields[32]),
+                "volume": _number(fields[36]), "amount": _number(fields[37]) * 10_000,
+                "amplitude": _number(fields[43]), "turnover": _number(fields[38]),
+                "volumeRatio": volume_ratio, "high": high, "low": low,
+                "open": _number(fields[5]), "prevClose": prev,
+                "marketCap": _number(fields[44]), "industry": "", "source": "腾讯",
+            })
+    if not result:
+        raise RuntimeError("腾讯行情未返回符合条件的主板股票")
+    try:
+        money_flow = fetch_eastmoney_main_money([stock["code"] for stock in result])
+        for stock in result:
+            if stock["code"] in money_flow:
+                stock.update(money_flow[stock["code"]])
+                stock["mainMoneySource"] = "东方财富"
+    except (requests.RequestException, ValueError, RuntimeError):
+        # 主行情可用时不能因资金辅助字段失败而中止整轮扫描。
+        pass
     return result
 
 
@@ -163,10 +280,10 @@ def fetch_eastmoney_sectors() -> dict[str, list[dict[str, Any]]]:
 
 def fetch_eastmoney_market_context() -> dict[str, Any]:
     """从东方财富涨跌分布接口获取全A市场广度，避免为此遍历全部股票。"""
-    response = requests.get(
+    response = _public_get(
         EASTMONEY_MARKET_URL,
         params={"ut": "7eea3edcaed734bea9cbfc24409ed989", "dpt": "wz.ztzt"},
-        headers={**HEADERS, "Referer": "https://quote.eastmoney.com/"}, timeout=12,
+        headers={**HEADERS, "Referer": "https://quote.eastmoney.com/"}, timeout=8,
     )
     response.raise_for_status()
     data = response.json().get("data") or {}
@@ -282,9 +399,64 @@ def _snapshot_stock(stock: dict[str, Any]) -> dict[str, Any]:
     keys = (
         "code", "name", "price", "pct", "volume", "amount", "amplitude", "turnover",
         "volumeRatio", "high", "low", "open", "prevClose", "industry", "dayPosition",
+        "mainNetInflow", "mainNetRatio", "mainMoneyUpdatedAt", "mainMoneyTrend",
         "learnedMatch", "bigYangPullbackMatch", "sectorEligible", "chanlunBuySignals", "chanlunSellSignals",
     )
     return {key: stock.get(key) for key in keys}
+
+
+def _main_money_trend(history: list[dict[str, Any]]) -> str:
+    if not history:
+        return "暂无数据"
+    current = _number(history[-1].get("mainNetInflow"))
+    if len(history) == 1:
+        return "净流入" if current > 0 else ("净流出" if current < 0 else "资金持平")
+    previous = _number(history[-2].get("mainNetInflow"))
+    if previous <= 0 < current:
+        return "由流出转流入"
+    if previous >= 0 > current:
+        return "由流入转流出"
+    if current > 0:
+        return "持续流入" if current >= previous else "流入减弱"
+    if current < 0:
+        return "持续流出" if current <= previous else "流出减弱"
+    return "资金持平"
+
+
+def _record_main_money_flow(
+    target: dict[str, Any], live: dict[str, Any] | None, now: datetime,
+    prior_history: list[dict[str, Any]] | None = None,
+) -> None:
+    """把个股当日累计主力净额追加为时间序列；源缺失时保留最后有效点。"""
+    history = [dict(point) for point in (prior_history if prior_history is not None else target.get("mainMoneyFlowHistory") or [])]
+    amount = _optional_number((live or {}).get("mainNetInflow"))
+    ratio = _optional_number((live or {}).get("mainNetRatio"))
+    if amount is None or ratio is None:
+        target["mainMoneyFlowHistory"] = history
+        target["mainMoneyStale"] = bool(history or target.get("mainMoneyUpdatedAt"))
+        return
+    point = {
+        "time": now.strftime("%H:%M"), "mainNetInflow": amount, "mainNetRatio": ratio,
+        "price": _number((live or {}).get("price")), "pct": _number((live or {}).get("pct")),
+    }
+    if history and history[-1].get("time") == point["time"]:
+        history[-1] = point
+    else:
+        history.append(point)
+    history = history[-240:]
+    target["mainNetInflow"] = amount
+    target["mainNetRatio"] = ratio
+    target["mainMoneyUpdatedAt"] = now.strftime("%Y-%m-%d %H:%M:%S")
+    target["mainMoneyFlowHistory"] = history
+    target["mainMoneyTrend"] = _main_money_trend(history)
+    target["mainMoneyStale"] = False
+
+
+def _mark_main_money_stale(payload: dict[str, Any]) -> None:
+    """整轮行情失败时，将缓存中的个股资金明确标成旧数据。"""
+    for stock in payload.get("stocks") or []:
+        if stock.get("mainNetInflow") is not None or stock.get("mainMoneyFlowHistory"):
+            stock["mainMoneyStale"] = True
 
 
 def _save_snapshot(
@@ -300,7 +472,7 @@ def _save_snapshot(
     path = folder / f"{now:%H%M}.json.gz"
     temp = folder / f".{now:%H%M}.json.gz.tmp"
     payload = {
-        "schemaVersion": 1, "time": now.strftime("%Y-%m-%d %H:%M:%S"),
+        "schemaVersion": 2, "time": now.strftime("%Y-%m-%d %H:%M:%S"),
         "source": "东方财富免费网页行情", "quoteValidationSources": ["腾讯", "新浪"],
         "checkpoint": checkpoint, "market": market, "sectors": sectors,
         "stocks": [_snapshot_stock(s) for s in stocks],
@@ -463,14 +635,14 @@ def _weighted_intraday_score(
 def fetch_eastmoney_30m(code: str, limit: int = 240, frequency: int = 30) -> pd.DataFrame:
     """从东方财富免费网页接口读取最新30分钟K线，供盘中缠论识别。"""
     secid = ("1." if str(code).startswith("6") else "0.") + str(code).zfill(6)
-    response = requests.get(
+    response = _public_get(
         EASTMONEY_KLINE_URL,
         params={
             "secid": secid, "ut": EASTMONEY_TOKEN, "fields1": "f1,f2,f3,f4,f5,f6",
             "fields2": "f51,f52,f53,f54,f55,f56,f57,f58,f59,f60,f61",
             "klt": frequency, "fqt": 1, "beg": 0, "end": 20500101, "lmt": limit,
         },
-        headers={**HEADERS, "Referer": "https://quote.eastmoney.com/"}, timeout=10,
+        headers={**HEADERS, "Referer": "https://quote.eastmoney.com/"}, timeout=6,
     )
     response.raise_for_status()
     rows = ((response.json().get("data") or {}).get("klines") or [])
@@ -490,10 +662,10 @@ def fetch_eastmoney_30m(code: str, limit: int = 240, frequency: int = 30) -> pd.
 def fetch_sina_30m(code: str, limit: int = 240, frequency: int = 30) -> pd.DataFrame:
     """东方财富历史K线域名不可达时，使用新浪免费30分钟K线兜底。"""
     symbol = _market_prefix(code) + str(code).zfill(6)
-    response = requests.get(
+    response = _public_get(
         "https://quotes.sina.cn/cn/api/jsonp_v2.php/var%20_data=/CN_MarketDataService.getKLineData",
         params={"symbol": symbol, "scale": frequency, "ma": "no", "datalen": limit},
-        headers=HEADERS, timeout=10,
+        headers=HEADERS, timeout=6,
     )
     response.raise_for_status()
     match = re.search(r"(\[.*\])", response.text, flags=re.S)
@@ -740,9 +912,11 @@ def _retain_daily_hits(
         row["currentMatch"] = False
         live = live_map.get(code)
         if live:
+            prior_history = row.get("mainMoneyFlowHistory") or []
             for key in quote_keys:
                 if key in live:
                     row[key] = live[key]
+            _record_main_money_flow(row, live, now, prior_history)
             # 选中时的涨幅保留不变；收盘前最后一轮行情作为收盘涨幅。
             if row.get("selectedPct") is None:
                 row["selectedPct"] = row.get("pct")
@@ -756,6 +930,17 @@ def _retain_daily_hits(
     for stock in selected:
         code = stock["code"]
         prior = rows.get(code, {})
+        live_money = {
+            "mainNetInflow": stock.get("mainNetInflow"), "mainNetRatio": stock.get("mainNetRatio"),
+            "price": stock.get("price"), "pct": stock.get("pct"),
+        }
+        if _optional_number(live_money["mainNetInflow"]) is None or _optional_number(live_money["mainNetRatio"]) is None:
+            stock.pop("mainNetInflow", None)
+            stock.pop("mainNetRatio", None)
+        _record_main_money_flow(stock, live_money, now, prior.get("mainMoneyFlowHistory") or [])
+        for key in ("mainNetInflow", "mainNetRatio", "mainMoneyUpdatedAt", "mainMoneyTrend"):
+            if key not in stock and key in prior:
+                stock[key] = prior[key]
         stock["firstHitTime"] = prior.get("firstHitTime") or hit_time
         stock["selectedPct"] = prior.get("selectedPct", stock.get("pct"))
         stock["selectedPrice"] = prior.get("selectedPrice", stock.get("price"))
@@ -819,6 +1004,42 @@ def _load_historical_sector_model() -> dict[str, Any]:
         return {}
 
 
+def _with_retained_main_money(stocks: list[dict[str, Any]], now: datetime) -> tuple[list[dict[str, Any]], int]:
+    """给已入选但跌出当前高量比池的股票补资金字段，不让其趋势中断。"""
+    path = CACHE.parent / f"intraday_hits_{now:%Y-%m-%d}.json"
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        old_rows = payload.get("stocks", []) if payload.get("tradeDate") == now.strftime("%Y-%m-%d") else []
+    except (OSError, json.JSONDecodeError):
+        old_rows = []
+    rows = list(stocks)
+    stock_map = {str(stock.get("code") or ""): stock for stock in stocks}
+    missing_codes = []
+    for old in old_rows:
+        code = str(old.get("code") or "")
+        current = stock_map.get(code)
+        if code and (current is None or current.get("mainNetInflow") is None or current.get("mainNetRatio") is None):
+            missing_codes.append(code)
+    if not missing_codes:
+        return rows, 0
+    for code in missing_codes:
+        if code not in stock_map:
+            supplement = {"code": code}
+            rows.append(supplement)
+            stock_map[code] = supplement
+    try:
+        flows = fetch_eastmoney_main_money(missing_codes)
+    except (requests.RequestException, ValueError, RuntimeError):
+        return rows, 0
+    for code, flow in flows.items():
+        current = stock_map.get(code)
+        if current is not None:
+            current.update(flow)
+        else:
+            rows.append({"code": code, **flow, "mainMoneySource": "东方财富"})
+    return rows, len(flows)
+
+
 def _learned_match(stock: dict[str, Any], model: dict[str, Any]) -> bool:
     cfg = model["thresholds"]
     opening_gap = (stock["open"] / stock["prevClose"] - 1) * 100 if stock["prevClose"] else -99
@@ -861,7 +1082,7 @@ def _parse_tencent(codes: list[str]) -> dict[str, float]:
         return {}
     symbols = ",".join(_market_prefix(c) + c for c in codes)
     try:
-        text = requests.get("https://qt.gtimg.cn/q=" + symbols, headers=HEADERS, timeout=10).content.decode("gbk", errors="ignore")
+        text = _public_get("https://qt.gtimg.cn/q=" + symbols, headers=HEADERS, timeout=6).content.decode("gbk", errors="ignore")
         result = {}
         for line in text.split(";"):
             if '="' not in line:
@@ -880,7 +1101,7 @@ def _parse_sina(codes: list[str]) -> dict[str, float]:
         return {}
     symbols = ",".join(_market_prefix(c) + c for c in codes)
     try:
-        text = requests.get("https://hq.sinajs.cn/list=" + symbols, headers=HEADERS, timeout=10).content.decode("gbk", errors="ignore")
+        text = _public_get("https://hq.sinajs.cn/list=" + symbols, headers=HEADERS, timeout=6).content.decode("gbk", errors="ignore")
         result = {}
         for line in text.split(";"):
             if '="' not in line:
@@ -908,14 +1129,36 @@ def scan_intraday(limit: int = 50) -> dict[str, Any]:
                 "error": "当前不在盘中交易时段，且暂无可用盘中缓存", "stocks": [],
             }
     strategy_history = _load_intraday_strategy_history(now)
+    primary_error = ""
     try:
         stocks = fetch_eastmoney()
         source_status = {
+            "个股行情": "东方财富",
             "东方财富个股": "成功", "东方财富板块": "待获取", "东方财富市场": "待获取", "腾讯": "待校验",
             "新浪": "待校验", "同花顺": "未接入（免费公开接口不稳定）",
         }
     except Exception as exc:
-        return {"success": False, "time": now.strftime("%Y-%m-%d %H:%M:%S"), "error": f"东方财富行情获取失败：{exc}", "stocks": []}
+        try:
+            primary_error = f"东方财富行情获取失败：{exc}"
+            stocks = fetch_tencent_market()
+            source_status = {
+                "个股行情": "腾讯降级",
+                "东方财富个股": f"失败：{type(exc).__name__}", "东方财富板块": "待获取", "东方财富市场": "待获取",
+                "腾讯": "个股主行情", "新浪": "待校验", "同花顺": "未接入（免费公开接口不稳定）",
+            }
+        except Exception as fallback_exc:
+            error = f"{primary_error}；腾讯降级行情失败：{fallback_exc}"
+            try:
+                cached = json.loads(CACHE.read_text(encoding="utf-8"))
+                if cached.get("success"):
+                    cached["servedFromCache"] = True
+                    cached["stale"] = True
+                    cached["sourceError"] = error
+                    _mark_main_money_stale(cached)
+                    return cached
+            except (OSError, json.JSONDecodeError):
+                pass
+            return {"success": False, "time": now.strftime("%Y-%m-%d %H:%M:%S"), "error": error, "stocks": []}
     try:
         sectors = fetch_eastmoney_sectors()
         sector_data_ok = bool(sectors["industry"])
@@ -974,11 +1217,11 @@ def scan_intraday(limit: int = 50) -> dict[str, Any]:
     chanlun_matches = [s for s in stocks if s.get("chanlunBuySignals")]
     big_yang_matches = [s for s in stocks if s.get("bigYangPullbackMatch")]
     # 历史样本外结果不支持把行业强弱设为硬门槛：验证期唯一触板样本来自弱行业。
-    # 因此行业数据必须可用，但只影响评分与风险提示；市场情绪仅降权，不会中止候选。
+    # 行业接口可用时补充板块信息；临时不可用时继续保留个股策略命中并按缺失行业降权。
     combined_matches = {s["code"]: s for s in stock_pattern_matches}
     combined_matches.update({s["code"]: s for s in chanlun_matches})
     combined_matches.update({s["code"]: s for s in big_yang_matches})
-    sector_candidates = [s for s in combined_matches.values() if s.get("sector")] if sector_data_ok else []
+    sector_candidates = list(combined_matches.values())
     # 低于50分不进入本轮正式候选，但历史命中仍由 _retain_daily_hits 保留，便于复盘。
     candidates = [s for s in sector_candidates if int(s.get("score") or 0) >= INTRADAY_MIN_SCORE]
     score_filtered = len(sector_candidates) - len(candidates)
@@ -989,6 +1232,8 @@ def scan_intraday(limit: int = 50) -> dict[str, Any]:
             brief.append("低涨幅后续触板")
         if stock.get("bigYangPullbackMatch"):
             brief.append("大阳回调不破10日线")
+        if not sector_data_ok:
+            brief.append("行业数据降级")
         sector = stock.get("sector") or {}
         if _number(sector.get("mainNetRatio")) > 0:
             brief.append(f"行业资金+{_number(sector.get('mainNetRatio')):.1f}%")
@@ -1002,7 +1247,7 @@ def scan_intraday(limit: int = 50) -> dict[str, Any]:
         if not market_current:
             no_candidate_reasons.append("当前不是有效交易日行情，已停止输出候选。")
         if not sector_data_ok:
-            no_candidate_reasons.append("东方财富行业板块数据本轮不可用，已安全停止输出。")
+            no_candidate_reasons.append("东方财富行业板块数据本轮不可用，已按缺失行业降权继续扫描。")
         if not learned_active:
             if not active_checkpoint:
                 no_candidate_reasons.append("当前处于开盘初始阶段，尚未到达已验证的观察检查点。")
@@ -1039,7 +1284,9 @@ def scan_intraday(limit: int = 50) -> dict[str, Any]:
     # _is_trading_session 用于是否实际扫描行情，这里只要仍是当日盘中即可维护累计记录。
     day_market_window = market_current and now.weekday() < 5 and clock_time(9, 30) <= now.time() <= clock_time(15, 30)
     if day_market_window:
-        daily_hits = _retain_daily_hits(now, selected, stocks, strategy_history, market_weak)
+        retention_stocks, retained_money_updated = _with_retained_main_money(stocks, now)
+        source_status["东方财富个股资金"] = f"成功补充{retained_money_updated}只" if retained_money_updated else "随个股行情更新"
+        daily_hits = _retain_daily_hits(now, selected, retention_stocks, strategy_history, market_weak)
     else:
         daily_hits = selected
     display_stocks = daily_hits[:limit]
@@ -1113,6 +1360,37 @@ def scan_intraday(limit: int = 50) -> dict[str, Any]:
     return result
 
 
+def _run_scan_with_deadline(limit: int, timeout_seconds: float = SCAN_DEADLINE_SECONDS) -> dict[str, Any]:
+    """为整轮扫描设置硬截止时间，防止底层网络连接长期占住循环进程。"""
+    def expire(_signum, _frame):
+        raise _ScanDeadlineExceeded()
+
+    previous_handler = signal.getsignal(signal.SIGALRM)
+    previous_timer = signal.getitimer(signal.ITIMER_REAL)
+    signal.signal(signal.SIGALRM, expire)
+    signal.setitimer(signal.ITIMER_REAL, max(0.001, timeout_seconds))
+    try:
+        return scan_intraday(limit)
+    except _ScanDeadlineExceeded:
+        attempted_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        try:
+            cached = json.loads(CACHE.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            cached = {"success": False, "stocks": []}
+        cached["servedFromCache"] = bool(cached.get("success"))
+        cached["stale"] = True
+        cached["scanTimedOut"] = True
+        cached["scanAttemptTime"] = attempted_at
+        cached["sourceError"] = f"本轮扫描超过 {timeout_seconds:g} 秒，已终止并保留上次结果"
+        _mark_main_money_stale(cached)
+        return cached
+    finally:
+        signal.setitimer(signal.ITIMER_REAL, 0)
+        signal.signal(signal.SIGALRM, previous_handler)
+        if previous_timer[0] > 0 or previous_timer[1] > 0:
+            signal.setitimer(signal.ITIMER_REAL, *previous_timer)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="盘中实时股票评分（仅研究排序）")
     parser.add_argument("--limit", type=int, default=50, help="展示候选数量，默认50")
@@ -1120,8 +1398,10 @@ def main() -> None:
     parser.add_argument("--interval", type=int, default=60, help="循环间隔秒数，默认60")
     args = parser.parse_args()
     while True:
-        result = scan_intraday(args.limit)
-        print(f"{result.get('time')}：{'成功' if result.get('success') else result.get('error')}，候选 {len(result.get('stocks', []))} 只")
+        result = _run_scan_with_deadline(args.limit)
+        log_time = result.get("scanAttemptTime") or result.get("time")
+        status = result.get("sourceError") if result.get("scanTimedOut") else ("成功" if result.get("success") else result.get("error"))
+        print(f"{log_time}：{status}，候选 {len(result.get('stocks', []))} 只")
         if not args.loop:
             break
         time.sleep(max(10, args.interval))

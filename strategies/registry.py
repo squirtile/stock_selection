@@ -13,6 +13,7 @@ from .daily_strategies import (
     SecondBreakoutStrategy,
     LongTermBreakoutStrategy,
     LongShadowStrategy,
+    BottomStableVolumeExpansionStrategy,
 )
 
 
@@ -43,6 +44,7 @@ def get_daily_strategies() -> list[BaseDailyStrategy]:
 
         # 反转形态
         SecondBreakoutStrategy(),  # 放量启动-缩量回踩-二次突破
+        BottomStableVolumeExpansionStrategy(),  # 底部13日均量后首次2倍放量
         LongShadowStrategy(),    # 长上下影线组合
 
         # 缺口形态
