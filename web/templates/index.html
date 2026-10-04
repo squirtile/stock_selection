@@ -186,23 +186,25 @@ a{text-decoration:none;color:inherit}
     .strategy-compact-list{grid-template-columns:repeat(3,minmax(0,1fr))}
 }
 </style>
+<link rel="stylesheet" href="{{ url_for('static', filename='workspace.css') }}?v=20261004-qr2">
 </head>
 <body>
-<nav class="topbar"><div class="topbar-brand">🧪 策略实验室</div></nav>
+<nav class="topbar"><div class="topbar-brand"><span class="brand-mark" aria-hidden="true">研</span>策略实验室</div><span class="topbar-caption">市场观察 · 策略研究</span></nav>
 <div class="container">
 <div class="hero"><h1>🧪 <span>策略</span>实验室</h1><p>个人量化研究记录 · 仅供学习参考</p></div>
 <div class="status-row"><div class="time"><i></i>{% if marketContext and marketContext.tradeDate %}数据日期 {{ marketContext.tradeDate[:4] }}-{{ marketContext.tradeDate[4:6] }}-{{ marketContext.tradeDate[6:8] }}{% else %}{{ time }}{% endif %}</div><div class="right"><span>共 {{ total }} 只</span><a class="refresh" href="/">🔄</a></div></div>
 <div class="update-tip">⏰ 每日 18:30 盘后数据更新，届时请刷新页面查看最新结果</div>
 <div class="main-tabs" id="mainTabs">
+<div class="main-tab" data-tab="strategies"><span class="icon">📊</span>策略扫描</div>
+<div class="main-tab" data-tab="intraday"><span class="icon">⚡</span>盘中实时</div>
+<div class="main-tab" data-tab="backtest"><span class="icon">📈</span>策略复盘</div>
 <div class="main-tab active" data-tab="money"><span class="icon">💰</span>资金动向</div>
 <div class="main-tab" data-tab="sector"><span class="icon">🔥</span>板块热度</div>
 <div class="main-tab" data-tab="ladder"><span class="icon">🚀</span>连板天梯</div>
-<div class="main-tab" data-tab="intraday"><span class="icon">⚡</span>盘中实时</div>
-<div class="main-tab" data-tab="strategies"><span class="icon">📊</span>策略扫描</div>
-<div class="main-tab" data-tab="backtest"><span class="icon">📈</span>策略复盘</div>
 </div>
 <!-- ===== 资金动向（默认首页） ===== -->
 <div id="panel-money" class="tab-panel">
+<div class="panel-heading"><h2>资金动向</h2><p>观察大盘、行业与概念的资金表现</p></div>
 <div class="money-subtabs" id="moneySubtabs">
 <div class="money-subtab active" data-mtab="market">大盘</div>
 <div class="money-subtab" data-mtab="industry">行业</div>
@@ -214,9 +216,10 @@ a{text-decoration:none;color:inherit}
 </div>
 </div>
 <!-- ===== 策略扫描 ===== -->
-<div id="panel-intraday" class="tab-panel" style="display:none"><div class="money-subtabs" id="intradaySubtabs"><div class="money-subtab active" data-imode="live">盘中实时</div><div class="money-subtab" data-imode="all">今日全部入选</div><div class="money-subtab" data-imode="tail_today">尾盘选票·今日</div><div class="money-subtab" data-imode="tail_previous">尾盘选票·昨日复盘</div></div><div id="intradayContent"><div class="empty"><div class="icon">⚡</div><div class="text">正在预载最近一次盘中扫描结果…</div></div></div></div>
+<div id="panel-intraday" class="tab-panel" style="display:none"><div class="panel-heading"><h2>盘中实时</h2><p>跟踪策略信号、当日入选与尾盘观察</p></div><div class="money-subtabs" id="intradaySubtabs"><div class="money-subtab active" data-imode="live">盘中实时</div><div class="money-subtab" data-imode="all">今日全部入选</div><div class="money-subtab" data-imode="tail_today">尾盘选票·今日</div><div class="money-subtab" data-imode="tail_previous">尾盘选票·昨日复盘</div></div><div id="intradayContent"><div class="empty"><div class="icon">⚡</div><div class="text">正在预载最近一次盘中扫描结果…</div></div></div></div>
 <!-- ===== 上一版信号次日复盘 ===== -->
 <div id="panel-backtest" class="tab-panel" style="display:none">
+<div class="panel-heading"><h2>策略复盘</h2><p>回看历史信号与次日表现</p></div>
 {% if strategyDashboard and strategyDashboard.historyRows %}
 <section class="strategy-rate-board" aria-label="所有策略历史胜率">
 <div class="strategy-rate-head"><div class="strategy-rate-title">1. 所有策略历史胜率</div><div class="strategy-rate-period">{{ strategyDashboard.historyStart }} 至 {{ strategyDashboard.historyEnd }}<br>累计 {{ strategyDashboard.totalRecords }} 条策略信号 · 按历史胜率降序</div></div>
@@ -242,6 +245,7 @@ a{text-decoration:none;color:inherit}
 {% else %}<div class="empty"><div class="icon">📈</div><div class="text">暂无上一版信号复盘</div><div class="hint">盘后运行 daily_report.py 后生成</div></div>{% endif %}
 </div>
 <div id="panel-strategies" class="tab-panel" style="display:none">
+<div class="panel-heading"><h2>策略扫描</h2><p>按策略查看选股结果，点击股票展开走势图</p></div>
 {% if marketContext %}<span class="market-tag {{ marketContext.trend }}">{{ marketContext.label or '📊 震荡' }} {{ marketContext.tradeDate or '' }}</span>{% endif %}
 <div class="filter-row" id="level1Tabs">{% for g in tabGroups %}<div class="filter-chip{% if loop.first %} active{% endif %}" data-key="{{ g.key }}">{{ g.label }}<span class="badge">{{ g.count }}</span></div>{% endfor %}</div>
 <!-- 缠论二级子标签（买点/卖点），仅选中缠论选股时显示 -->
@@ -267,9 +271,9 @@ a{text-decoration:none;color:inherit}
 </div>
 </div>
 <!-- ===== 连板天梯 ===== -->
-<div id="panel-ladder" class="tab-panel" style="display:none"><div id="ladderContent"><div class="empty"><div class="icon">🚀</div><div class="text">加载中…</div></div></div></div>
+<div id="panel-ladder" class="tab-panel" style="display:none"><div class="panel-heading"><h2>连板天梯</h2><p>查看连板层级与市场强势股</p></div><div id="ladderContent"><div class="empty"><div class="icon">🚀</div><div class="text">加载中…</div></div></div></div>
 <!-- ===== 板块热度 ===== -->
-<div id="panel-sector" class="tab-panel" style="display:none"><div id="sectorContent"><div class="empty"><div class="icon">🔥</div><div class="text">加载中…</div></div></div></div>
+<div id="panel-sector" class="tab-panel" style="display:none"><div class="panel-heading"><h2>板块热度</h2><p>浏览行业与概念的活跃表现</p></div><div id="sectorContent"><div class="empty"><div class="icon">🔥</div><div class="text">加载中…</div></div></div></div>
 <section class="support-card" aria-label="支持项目">
 <h2>☕ 支持这个小项目</h2>
 <p>如果这些研究内容对你有一点帮助，欢迎请作者喝杯咖啡。感谢每一份支持，让这个小工具能继续维护和迭代。</p>
