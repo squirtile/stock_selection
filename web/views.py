@@ -5,6 +5,7 @@ Web 展示蓝图 —— 负责首页 HTML 页面渲染
 
 from __future__ import annotations
 
+import copy
 import json
 import os
 from datetime import datetime
@@ -121,7 +122,8 @@ def index():
 
     try:
         from backtest.strategy_history_store import load_dashboard
-        strategy_dashboard = load_dashboard(PROJECT_ROOT)
+        # 页面需要过滤卖点，但不能原地修改历史仓库返回的对象。
+        strategy_dashboard = copy.deepcopy(load_dashboard(PROJECT_ROOT))
         strategy_dashboard["historyRows"] = [
             row for row in strategy_dashboard.get("historyRows", [])
             if row.get("direction") != "看跌" and "卖" not in str(row.get("strategy", ""))
@@ -133,6 +135,18 @@ def index():
         strategy_dashboard["intraday"] = load_intraday_dashboard(PROJECT_ROOT)
     except Exception:
         strategy_dashboard = {"reviewDate": "", "rows": [], "todayRows": [], "historyRows": [], "totalRecords": 0, "intraday": {"rows": []}}
+
+    stock_catalog = []
+    for stock in data["stocks"]:
+        stock_catalog.append({
+            "code": stock.get("code", ""),
+            "name": stock.get("name", ""),
+            "price": stock.get("price"),
+            "pct": stock.get("pct"),
+            "industry": stock.get("industry", ""),
+            "score": stock.get("score"),
+            "strategies": [item.get("name", "") for item in stock.get("strategyTypes", []) if isinstance(item, dict)],
+        })
 
     return render_template(
         "index.html",
@@ -147,6 +161,8 @@ def index():
         indexDivergence=data["marketContext"].get("indexDivergence", {}) if data.get("marketContext") else {},
         bigYangStocks=big_yang_stocks,
         intradayInitial=data.get("intradayInitial", {}),
+        strategyHistoryJson=strategy_dashboard.get("historyRows", []),
+        stockCatalogJson=stock_catalog,
     )
 
 

@@ -261,6 +261,54 @@ def health():
     return jsonify({"status": "ok", "time": datetime.now().strftime("%Y-%m-%d %H:%M:%S")})
 
 
+@app.route("/api/workspace/overview", methods=["GET"])
+def get_workspace_overview():
+    """返回市场宽度和各展示数据源的独立健康状态。"""
+    from tools.research_workspace import build_workspace_overview
+
+    return jsonify(_json_safe(build_workspace_overview(PROJECT_ROOT)))
+
+
+@app.route("/api/stocks/search", methods=["GET"])
+def search_stock_catalog():
+    """搜索本地日报、盘中记录和行情快照，不触发联网扫描。"""
+    query = request.args.get("q", "").strip()
+    if not query:
+        return jsonify({"success": True, "query": "", "results": []})
+    try:
+        limit = max(1, min(int(request.args.get("limit", 20)), 50))
+    except (TypeError, ValueError):
+        limit = 20
+    from tools.research_workspace import search_stocks
+
+    rows = search_stocks(PROJECT_ROOT, query, limit)
+    return jsonify(_json_safe({"success": True, "query": query, "results": rows}))
+
+
+@app.route("/api/stock/<code>/research", methods=["GET"])
+def get_stock_research(code: str):
+    """聚合单股已有研究资料，不重新计算策略或评分。"""
+    if len(code) != 6 or not code.isdigit():
+        return jsonify({"success": False, "error": "股票代码必须为6位数字"}), 400
+    from tools.research_workspace import build_stock_research
+
+    result = build_stock_research(PROJECT_ROOT, code)
+    if result is None:
+        return jsonify({"success": False, "error": f"未找到股票 {code} 的本地研究数据"}), 404
+    return jsonify(_json_safe(result))
+
+
+@app.route("/api/workspace/alerts", methods=["GET"])
+def get_workspace_alerts():
+    """按当前浏览器传来的观察池代码生成页面内提醒。"""
+    values = request.args.get("codes", "").split(",")[:100]
+    codes = [value.strip() for value in values if len(value.strip()) == 6 and value.strip().isdigit()]
+    from tools.research_workspace import build_watchlist_alerts
+
+    alerts = build_watchlist_alerts(PROJECT_ROOT, codes)
+    return jsonify(_json_safe({"success": True, "alerts": alerts, "total": len(alerts)}))
+
+
 @app.route("/api/intraday", methods=["GET"])
 def get_intraday_candidates():
     """读取后台扫描器的最近结果，避免页面请求阻塞在全市场扫描上。"""
