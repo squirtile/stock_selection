@@ -137,6 +137,25 @@ console.log(JSON.stringify({limited,selected,compared,overview}));
         self.assertEqual(value["overview"]["sourceText"], "3/5 数据源可用")
         self.assertEqual(value["overview"]["breadthText"], "市场宽度暂无")
 
+    def test_javascript_rejects_empty_stock_and_does_not_rewrite_same_watch_label(self):
+        root = Path(__file__).resolve().parents[1]
+        program = r"""
+const ws=require('./static/research_workspace.js');
+let value='☆',writes=0;
+const button={
+  get textContent(){return value}, set textContent(next){writes+=1;value=next},
+  classList:{toggle:()=>{}}, setAttribute:()=>{}, title:''
+};
+ws.updateWatchButton(button,false);
+console.log(JSON.stringify({invalid:ws.toggleWatchlist([],{}),writes,value}));
+"""
+        result = subprocess.run(["node", "-e", program], cwd=root, text=True, capture_output=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        value = json.loads(result.stdout)
+        self.assertEqual(value["invalid"], [])
+        self.assertEqual(value["writes"], 0)
+        self.assertEqual(value["value"], "☆")
+
 
 if __name__ == "__main__":
     unittest.main()

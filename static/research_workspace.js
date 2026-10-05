@@ -15,8 +15,9 @@
     }
 
     function normalizeStock(stock) {
-        const code = String(stock && stock.code || '').replace(/\D/g, '').padStart(6, '0');
-        if (!/^\d{6}$/.test(code)) return null;
+        const rawCode = String(stock && stock.code || '').replace(/\D/g, '');
+        if (!rawCode || rawCode.length > 6) return null;
+        const code = rawCode.padStart(6, '0');
         return {
             code,
             name: String(stock.name || code),
@@ -89,7 +90,16 @@
         };
     }
 
-    const api = { loadStoredArray, toggleWatchlist, uniqueAlerts, selectStrategyKeys, buildStrategyComparison, marketOverviewModel };
+    function updateWatchButton(button, active) {
+        if (!button) return;
+        const label = active ? '★' : '☆';
+        button.classList.toggle('is-watched', active);
+        if (button.textContent !== label) button.textContent = label;
+        button.title = active ? '移出个人观察' : '加入个人观察';
+        button.setAttribute('aria-pressed', active ? 'true' : 'false');
+    }
+
+    const api = { loadStoredArray, toggleWatchlist, uniqueAlerts, selectStrategyKeys, buildStrategyComparison, marketOverviewModel, updateWatchButton };
     if (typeof module !== 'undefined' && module.exports) module.exports = api;
     global.ResearchWorkspace = api;
 
@@ -149,10 +159,7 @@
     function syncWatchButtons() {
         document.querySelectorAll('[data-workspace-action="watch"]').forEach(button => {
             const active = isWatched(button.dataset.code);
-            button.classList.toggle('is-watched', active);
-            button.textContent = active ? '★' : '☆';
-            button.title = active ? '移出个人观察' : '加入个人观察';
-            button.setAttribute('aria-pressed', active ? 'true' : 'false');
+            updateWatchButton(button, active);
         });
         const count = document.getElementById('watchlistNavCount');
         if (count) count.textContent = String(watchlist.length);

@@ -70,8 +70,7 @@ def _read_json(path: Path) -> tuple[dict[str, Any] | None, str]:
 
 def _payload_time(payload: dict[str, Any], path: Path) -> datetime:
     candidates = (
-        payload.get("time"), payload.get("generated_at"), payload.get("generatedAt"),
-        payload.get("tradeDate"), payload.get("date"),
+        payload.get("time"), payload.get("tradeDate"), payload.get("date"),
     )
     for value in candidates:
         parsed = _parse_datetime(value)
@@ -82,6 +81,10 @@ def _payload_time(payload: dict[str, Any], path: Path) -> datetime:
         parsed_dates = [parsed for parsed in (_parse_datetime(item) for item in dates) if parsed]
         if parsed_dates:
             return max(parsed_dates)
+    for value in (payload.get("generated_at"), payload.get("generatedAt")):
+        parsed = _parse_datetime(value)
+        if parsed:
+            return parsed
     return datetime.fromtimestamp(path.stat().st_mtime)
 
 
@@ -227,7 +230,7 @@ def _merge_record(records: dict[str, dict[str, Any]], raw: dict[str, Any], sourc
         "code": code, "name": "", "price": None, "pct": None, "industry": "",
         "marketCap": None, "score": None, "strategies": [], "categories": [],
         "sources": [], "hasSignal": False, "dataTime": "", "_priority": -1,
-        "_rawBySource": {},
+        "_quotePriority": -1, "_quoteTime": "", "_rawBySource": {},
     })
     if source not in item["sources"]:
         item["sources"].append(source)
@@ -241,14 +244,30 @@ def _merge_record(records: dict[str, dict[str, Any]], raw: dict[str, Any], sourc
             item["categories"].append(category)
     if source != "行情快照" and (names or raw.get("categories") or raw.get("reasons")):
         item["hasSignal"] = True
-    if priority < item["_priority"]:
-        return
-    item["_priority"] = priority
-    for key in ("name", "price", "pct", "industry", "marketCap", "score"):
-        value = raw.get(key)
-        if value not in (None, "", "nan", "None"):
-            item[key] = value
-    item["dataTime"] = data_time or str(raw.get("quoteTime") or item["dataTime"])
+    if priority >= item["_priority"]:
+        item["_priority"] = priority
+        for key in ("name", "industry", "score"):
+            value = raw.get(key)
+            if value not in (None, "", "nan", "None"):
+                item[key] = value
+
+    quote_time = data_time or str(raw.get("quoteTime") or "")
+    new_time = _parse_datetime(quote_time)
+    old_time = _parse_datetime(item["_quoteTime"])
+    replace_quote = (
+        (new_time is not None and old_time is None)
+        or (new_time is not None and old_time is not None and new_time > old_time)
+        or (new_time == old_time and priority >= item["_quotePriority"])
+        or (new_time is None and old_time is None and priority >= item["_quotePriority"])
+    )
+    if replace_quote:
+        for key in ("price", "pct", "marketCap"):
+            value = raw.get(key)
+            if value not in (None, "", "nan", "None"):
+                item[key] = value
+        item["dataTime"] = quote_time or item["dataTime"]
+        item["_quoteTime"] = quote_time
+        item["_quotePriority"] = priority
 
 
 def _catalog(project_root: str | Path) -> dict[str, dict[str, Any]]:
@@ -263,7 +282,14 @@ def _catalog(project_root: str | Path) -> dict[str, dict[str, Any]]:
         data_time = str(daily.get("time") or "")
         for row in daily.get("stocks") or []:
             if isinstance(row, dict):
-                _merge_record(records, row, "每日策略", 2, data_time)
+                display_row = dict(row)
+                card_quote = row.get("cardQuote")
+                row_time = data_time
+                if isinstance(card_quote, dict):
+                    for key in ("price", "pct", "industry", "marketCap"):
+                        display_row[key] = card_quote.get(key)
+                    row_time = str(card_quote.get("tradeDate") or data_time)
+                _merge_record(records, display_row, "每日策略", 2, row_time)
 
     hit_paths = sorted((root / "output").glob("intraday_hits_*.json"), reverse=True)
     if hit_paths:

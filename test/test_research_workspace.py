@@ -81,6 +81,18 @@ class ResearchWorkspaceTest(unittest.TestCase):
         self.assertEqual(result["sources"]["intraday"]["status"], "stale")
         self.assertEqual(result["sources"]["intraday"]["dataTime"], "2026-10-02 14:59:00")
 
+    def test_dated_source_rows_take_precedence_over_new_generation_time(self):
+        from tools.research_workspace import build_workspace_overview
+
+        self.write_json("sector_heat.json", {
+            "generated_at": "2026-10-05 14:59:00",
+            "dates": ["20261001"],
+            "data": {},
+        })
+        result = build_workspace_overview(self.root, now=datetime(2026, 10, 5, 15, 0))
+        self.assertEqual(result["sources"]["sector"]["status"], "stale")
+        self.assertEqual(result["sources"]["sector"]["dataTime"], "2026-10-01 00:00:00")
+
     def test_search_deduplicates_sources_and_prefers_intraday_quote(self):
         from tools.research_workspace import search_stocks
 
@@ -104,6 +116,41 @@ class ResearchWorkspaceTest(unittest.TestCase):
         self.assertEqual(rows[0]["pct"], 8.0)
         self.assertEqual(set(rows[0]["sources"]), {"行情快照", "每日策略", "盘中实时"})
         self.assertTrue(rows[0]["hasSignal"])
+
+    def test_search_uses_dated_card_quote_instead_of_undated_signal_price(self):
+        from tools.research_workspace import search_stocks
+
+        daily = self.stock(price=3.2, pct=None)
+        daily["cardQuote"] = {
+            "price": 10.7, "pct": 7.0, "tradeDate": "2026-10-05",
+            "industry": "电子", "marketCap": 101,
+        }
+        self.write_json("mini_program_stocks.json", {
+            "time": "2026-10-05 19:30:00", "stocks": [daily],
+        })
+        self.write_snapshot(rows=[
+            {"代码": "600001", "名称": "测试股份", "最新价": 10.6, "涨跌幅": 6.0,
+             "行业": "电子", "总市值_亿元": 100, "交易日": "20261005"},
+        ])
+        row = search_stocks(self.root, "600001")[0]
+        self.assertEqual(row["price"], 10.7)
+        self.assertEqual(row["pct"], 7.0)
+        self.assertEqual(row["dataTime"], "2026-10-05")
+
+    def test_newer_snapshot_quote_is_not_overwritten_by_older_daily_signal(self):
+        from tools.research_workspace import search_stocks
+
+        self.write_json("mini_program_stocks.json", {
+            "time": "2026-10-02 19:30:00", "stocks": [self.stock(price=3.2, pct=1.0)],
+        })
+        self.write_snapshot(rows=[
+            {"代码": "600001", "名称": "测试股份", "最新价": 10.6, "涨跌幅": 6.0,
+             "行业": "电子", "总市值_亿元": 100, "交易日": "20261005"},
+        ])
+        row = search_stocks(self.root, "600001")[0]
+        self.assertEqual(row["price"], 10.6)
+        self.assertEqual(row["pct"], 6.0)
+        self.assertEqual(row["dataTime"], "2026-10-05")
 
     def test_empty_or_huge_search_is_bounded(self):
         from tools.research_workspace import search_stocks
