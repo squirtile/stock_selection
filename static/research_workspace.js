@@ -51,6 +51,11 @@
         root.querySelectorAll('.stock-card.is-expanded').forEach(card => card.classList.remove('is-expanded'));
     }
 
+    function activateExclusiveChart(root, card) {
+        clearExpandedCharts(root);
+        if (card && card.classList) card.classList.add('is-expanded');
+    }
+
     function loadStoredArray(storage, key) {
         try {
             if (!storage || typeof storage.getItem !== 'function') return [];
@@ -146,7 +151,7 @@
         button.setAttribute('aria-pressed', active ? 'true' : 'false');
     }
 
-    const api = { loadStoredArray, toggleWatchlist, uniqueAlerts, selectStrategyKeys, buildStrategyComparison, marketOverviewModel, updateWatchButton, findStrategyDefinition, searchStateMarkup, marketSessionText, clearExpandedCharts, buildDailySummary };
+    const api = { loadStoredArray, toggleWatchlist, uniqueAlerts, selectStrategyKeys, buildStrategyComparison, marketOverviewModel, updateWatchButton, findStrategyDefinition, searchStateMarkup, marketSessionText, clearExpandedCharts, activateExclusiveChart, buildDailySummary };
     if (typeof module !== 'undefined' && module.exports) module.exports = api;
     global.ResearchWorkspace = api;
 

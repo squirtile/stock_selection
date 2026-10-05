@@ -747,7 +747,7 @@ function toggleKline(card){
   const code=card.dataset.code;
   let area=document.querySelector('.kline-area[data-code="'+code+'"]');
   if(area){area.remove();card.classList.remove('is-expanded');return}
-  card.classList.add('is-expanded');
+  window.ResearchWorkspace.activateExclusiveChart(document,card);
   area=document.createElement('div');area.className='kline-area';area.dataset.code=code;
   area.style.cssText='margin:0 0 8px 0;padding:12px 14px;background:#fafbfc;border-radius:10px;border:1px solid #e0e0e0';
   const hdr=document.createElement('div');hdr.style.cssText='display:flex;align-items:center;margin-bottom:4px;font-size:12px;color:#666';
@@ -896,6 +896,6 @@ function renderSector(date,secs){const data=window._sdata,c=document.getElementB
 function switchSector(d){const data=window._sdata;if(!data)return;const secs=(data.data[d]&&data.data[d].sectors)||[];if(secs.length){window._sdate=d;renderSector(d,secs)}}
 function toggleSectorStocks(date,el){let existing=document.querySelector('.sector-stocks-area');if(existing){if(existing.previousElementSibling===el){existing.remove();return}else{existing.remove()}}area=document.createElement('div');area.className='sector-stocks-area';area.style.cssText='margin:0 0 6px 0;padding:8px 10px;background:#fafbfc;border-radius:8px;border:1px solid #e0e0e0;max-height:360px;overflow-y:auto';const data=window._sdata;const name=el.querySelector('.sname').textContent;const sectors=(data.data[date]&&data.data[date].sectors)||[];const sec=sectors.find(s=>s.name===name);const stocks=(sec&&sec.limit_stocks)||[];let hdr='<div style="display:flex;align-items:center;margin-bottom:6px;font-size:12px;color:#666"><b style="color:#1a1a2e">'+name+'</b> 涨停股明细 <span style="font-size:10px;color:#aaa;margin-left:auto;cursor:pointer" onclick="this.closest(\'.sector-stocks-area\').remove()">✕ 收起</span></div>';if(!stocks.length){hdr+='<div style="font-size:11px;color:#aaa;text-align:center;padding:10px">该板块暂无涨停股数据（运行 sector_heat.py --json 获取成分股）</div>'}else{let t='<table style="width:100%;font-size:11px;border-collapse:collapse"><thead><tr style="color:#888"><th style="text-align:left;padding:4px 6px">股票</th><th style="text-align:left;padding:4px 6px">行业</th><th style="text-align:right;padding:4px 6px">涨幅</th><th style="text-align:right;padding:4px 6px">连板</th><th style="text-align:right;padding:4px 6px">市值(亿)</th></tr></thead><tbody>';stocks.forEach(s=>{t+='<tr style="border-top:1px solid #f0f0f0"><td style="padding:5px 6px"><b style="color:#1a1a2e">'+s.name+'</b><span style="color:#bbb;font-size:10px;margin-left:4px">'+(s.ts_code||'').replace('.SH','').replace('.SZ','')+'</span></td><td style="padding:5px 6px;color:#666">'+(s.industry||'')+'</td><td style="padding:5px 6px;text-align:right;color:#ef4444;font-weight:600">+'+s.pct_chg+'%</td><td style="padding:5px 6px;text-align:right;font-weight:600;color:'+(s.limit_times>=3?'#ef4444':'#666')+'">'+(s.limit_times||0)+'板</td><td style="padding:5px 6px;text-align:right;color:#888">'+(s.float_mv||'')+'</td></tr>'});t+='</tbody></table>';hdr+=t}area.innerHTML=hdr;el.after(area)}
 </script>
-<script src="{{ url_for('static', filename='research_workspace.js') }}?v=20261005-disclosure1" defer></script>
+<script src="{{ url_for('static', filename='research_workspace.js') }}?v=20261005-chartfix2" defer></script>
 </body>
 </html>

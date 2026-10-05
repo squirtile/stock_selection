@@ -98,7 +98,7 @@ class ResearchWorkspaceUiTest(unittest.TestCase):
         self.assertEqual(payload["stocks"][0]["code"], "600001")
         self.assertEqual(payload["strategies"][0]["strategy"], "测试策略")
         scripts = [tag.get("src", "") for tag in soup.find_all("script")]
-        self.assertTrue(any(src.endswith("/static/research_workspace.js?v=20261005-disclosure1") for src in scripts))
+        self.assertTrue(any(src.endswith("/static/research_workspace.js?v=20261005-chartfix2") for src in scripts))
 
     def test_strategy_comparison_landmarks_are_in_replay_panel(self):
         soup = self.render_home()
@@ -202,6 +202,33 @@ console.log(JSON.stringify({removed,collapsed}));
         inline_scripts = "\n".join(tag.string or "" for tag in soup.find_all("script") if not tag.get("src"))
         self.assertIn("const list=document.getElementById('stockList')", inline_scripts)
         self.assertIn("ResearchWorkspace.clearExpandedCharts(list)", inline_scripts)
+
+    def test_opening_another_stock_chart_closes_the_previous_chart(self):
+        root = Path(__file__).resolve().parents[1]
+        program = r"""
+const ws=require('./static/research_workspace.js');
+const events=[];
+const view={
+  querySelectorAll(selector){
+    if(selector==='.kline-area') return [{remove:()=>events.push('remove-chart')}];
+    if(selector==='.stock-card.is-expanded') return [{classList:{remove:name=>events.push('collapse-'+name)}}];
+    return [];
+  }
+};
+const nextCard={classList:{add:name=>events.push('expand-'+name)}};
+ws.activateExclusiveChart(view,nextCard);
+console.log(JSON.stringify(events));
+"""
+        result = subprocess.run(["node", "-e", program], cwd=root, text=True, capture_output=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(
+            json.loads(result.stdout),
+            ["remove-chart", "collapse-is-expanded", "expand-is-expanded"],
+        )
+
+        soup = self.render_home()
+        inline_scripts = "\n".join(tag.string or "" for tag in soup.find_all("script") if not tag.get("src"))
+        self.assertIn("ResearchWorkspace.activateExclusiveChart(document,card)", inline_scripts)
 
     def test_javascript_exposes_strategy_glossary_search_states_and_session_text(self):
         root = Path(__file__).resolve().parents[1]
