@@ -3,7 +3,15 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1.0">
-<title>🧪 策略实验室</title>
+<title>A 股策略实验室｜市场观察与策略研究</title>
+<meta name="description" content="A 股市场观察与策略研究工作台，展示策略扫描、盘中信号、历史复盘、资金与板块数据，仅供研究参考。">
+<link rel="canonical" href="https://byxzwz.top/">
+<meta property="og:type" content="website">
+<meta property="og:url" content="https://byxzwz.top/">
+<meta property="og:title" content="A 股策略实验室｜市场观察与策略研究">
+<meta property="og:description" content="查看 A 股策略扫描、盘中信号、历史复盘与市场数据。策略结果仅供研究参考。">
+<meta property="og:site_name" content="策略实验室">
+<meta property="og:image" content="https://byxzwz.top/static/strategy-lab-share.svg">
 <style>
 *,*::before,*::after{margin:0;padding:0;box-sizing:border-box}
 body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif;background:#f5f6f8;color:#2c3e50;min-height:100vh}
@@ -194,14 +202,14 @@ a{text-decoration:none;color:inherit}
     .strategy-compact-list{grid-template-columns:repeat(3,minmax(0,1fr))}
 }
 </style>
-<link rel="stylesheet" href="{{ url_for('static', filename='workspace.css') }}?v=20261005-polish1">
+<link rel="stylesheet" href="{{ url_for('static', filename='workspace.css') }}?v=20261005-disclosure1">
 </head>
 <body>
 <nav class="topbar"><div class="topbar-brand"><span class="brand-mark" aria-hidden="true">🧪</span>策略实验室</div><span class="topbar-caption">市场观察 · 策略研究</span></nav>
 <div class="container">
 <header class="workspace-header">
 <div class="hero"><h1><span>策略</span>实验室</h1><p>个人量化研究记录 · 仅供学习参考</p></div>
-<div class="status-row"><div class="time"><i></i><span>{% if marketContext and marketContext.tradeDate %}数据日期 {{ marketContext.tradeDate[:4] }}-{{ marketContext.tradeDate[4:6] }}-{{ marketContext.tradeDate[6:8] }}{% else %}{{ time }}{% endif %}</span><span class="page-refresh-time" id="pageRefreshTime" aria-live="polite">页面刷新 --:--:--</span></div><div class="right"><span>共 {{ total }} 只</span><a class="refresh" href="/" aria-label="刷新页面" title="刷新页面"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 7v5h-5M4 17v-5h5"/><path d="M6.1 7a7 7 0 0 1 11.6-1L20 9M4 15l2.3 3A7 7 0 0 0 17.9 17"/></svg></a></div></div>
+<div class="status-row"><div class="time"><i></i><span id="marketSessionStatus" aria-live="polite">{% if marketContext and marketContext.tradeDate %}最近交易日：{{ marketContext.tradeDate[:4] }}-{{ marketContext.tradeDate[4:6] }}-{{ marketContext.tradeDate[6:8] }} · 正在确认市场状态{% else %}最近交易日：-- · 正在确认市场状态{% endif %}</span><span class="page-refresh-time" id="pageRefreshTime" aria-live="polite">页面刷新 --:--:--</span></div><div class="right"><span>共 {{ total }} 只</span><a class="refresh" href="/" aria-label="刷新页面" title="刷新页面"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 7v5h-5M4 17v-5h5"/><path d="M6.1 7a7 7 0 0 1 11.6-1L20 9M4 15l2.3 3A7 7 0 0 0 17.9 17"/></svg></a></div></div>
 <div class="update-tip site-update">每日 18:30 盘后更新 · 刷新查看最新结果</div>
 </header>
 <section class="workspace-tools" aria-label="研究工具">
@@ -212,8 +220,10 @@ a{text-decoration:none;color:inherit}
 </div>
 <button type="button" class="workspace-tool-button" id="alertCenterButton" aria-label="打开信号提醒"><span aria-hidden="true">🔔</span><span>提醒</span><b id="alertUnreadBadge" hidden>0</b></button>
 <button type="button" class="workspace-tool-button" id="sourceStatusButton" aria-label="查看数据源状态"><span aria-hidden="true">◉</span><span>数据状态</span></button>
+<button type="button" class="workspace-tool-button" id="dailySummaryButton" aria-label="查看每日市场摘要"><span aria-hidden="true">🗒️</span><span>每日摘要</span></button>
 </section>
 <div id="marketOverview" class="market-overview" aria-live="polite"><span class="market-overview-loading">正在汇总市场宽度与数据状态…</span></div>
+<aside class="research-risk-notice" id="researchRiskNotice"><span>策略结果基于历史数据和规则计算，不构成投资建议；历史表现不代表未来收益，请独立判断并自行承担风险。</span><button type="button" id="methodologyButton">查看数据与回测口径</button></aside>
 <div class="main-tabs" id="mainTabs">
 <div class="main-tab active" data-tab="strategies"><span class="icon" aria-hidden="true">📊</span>策略扫描</div>
 <div class="main-tab" data-tab="intraday"><span class="icon" aria-hidden="true">⚡</span>盘中实时</div>
@@ -226,6 +236,7 @@ a{text-decoration:none;color:inherit}
 <!-- ===== 个人观察 ===== -->
 <div id="panel-watchlist" class="tab-panel" style="display:none">
 <div class="panel-heading"><h2>个人观察</h2><p>仅保存在当前浏览器，不影响其他用户</p></div>
+<div class="browser-storage-notice" id="watchlistStorageNotice">观察池与提醒已读状态仅保存在当前浏览器；清理浏览器数据后可能丢失，无痕模式或更换设备也不会自动同步云端。</div>
 <div id="watchlistContent" class="watchlist-content"><div class="empty state-panel"><div class="icon">⭐</div><div class="text">观察池还是空的</div><div class="hint">从股票卡片或顶部搜索结果中点击收藏</div></div></div>
 </div>
 <!-- ===== 资金动向 ===== -->
@@ -309,7 +320,7 @@ a{text-decoration:none;color:inherit}
 <div class="card-line3">{% for st in s.strategyTypes %}<span class="s-tag">{{ st.group }}·{{ st.name }}</span>{% endfor %}{% for ml in s.mlModels %}<span class="m-tag">🤖 {{ ml.displayName }}</span>{% endfor %}</div>
 <div class="card-hint">💡 点击展开最近30日K线图</div>
 </div>
-<div class="card-side"><div class="card-score"><div class="snum{% if s.score >= 80 %} score-a{% elif s.score >= 60 %} score-b{% else %} score-c{% endif %}">{{ s.score }}</div><div class="slabel">分</div></div><div class="card-actions"><button type="button" data-workspace-action="watch" data-code="{{ s.code }}" data-name="{{ s.name }}" aria-label="收藏{{ s.name }}" title="加入个人观察">☆</button><button type="button" data-workspace-action="research" data-code="{{ s.code }}" data-name="{{ s.name }}" aria-label="研究{{ s.name }}" title="打开个股研究">研</button></div></div>
+<div class="card-side"><div class="card-score"><div class="snum{% if s.score >= 80 %} score-a{% elif s.score >= 60 %} score-b{% else %} score-c{% endif %}">{{ s.score }}</div><div class="slabel">分</div></div><button type="button" class="score-help" data-workspace-action="score-info" data-code="{{ s.code }}" data-name="{{ s.name }}">评分说明</button><div class="card-actions"><button type="button" data-workspace-action="watch" data-code="{{ s.code }}" data-name="{{ s.name }}" aria-label="收藏{{ s.name }}" title="加入个人观察">☆</button><button type="button" data-workspace-action="research" data-code="{{ s.code }}" data-name="{{ s.name }}" aria-label="研究{{ s.name }}" title="打开个股研究">研</button></div></div>
 </div>
 {% endfor %}
 {% if stocks|length == 0 %}<div class="empty"><div class="icon">📭</div><div class="text">暂无选股结果</div></div>{% endif %}
@@ -333,7 +344,7 @@ a{text-decoration:none;color:inherit}
 <p>如果这些研究内容对你有一点帮助，欢迎请作者喝杯咖啡。感谢每一份支持，让这个小工具能继续维护和迭代。</p>
 <img src="{{ url_for('web.support_qr') }}" alt="微信收款码" loading="lazy">
 </section>
-<div class="footer">以上内容仅供个人研究参考，不构成投资建议<br><a href="https://beian.miit.gov.cn/" target="_blank" rel="noopener noreferrer" style="color:#ccc;">湘ICP备2026029124号-1</a><span style="margin:0 8px;color:#ddd;">｜</span><a href="https://beian.mps.gov.cn/#/query/webSearch?code=44030002016802" target="_blank" rel="noopener noreferrer" style="color:#ccc;">粤公网安备44030002016802号</a></div>
+<div class="footer">策略结果基于历史数据和规则计算，仅供个人研究，不构成投资建议；历史表现不代表未来收益，请独立判断并自行承担风险。<br><button type="button" class="footer-methodology" data-open-methodology>数据、样本与回测口径</button><span aria-hidden="true"> · </span><button type="button" class="footer-methodology" data-open-summary>每日市场摘要 / 分享卡片</button><br><a href="https://beian.miit.gov.cn/" target="_blank" rel="noopener noreferrer" style="color:#ccc;">湘ICP备2026029124号-1</a><span style="margin:0 8px;color:#ddd;">｜</span><a href="https://beian.mps.gov.cn/#/query/webSearch?code=44030002016802" target="_blank" rel="noopener noreferrer" style="color:#ccc;">粤公网安备44030002016802号</a></div>
 </div>
 <script id="researchWorkspaceData" type="application/json">{{ {'stocks': stockCatalogJson|default([], true), 'strategies': strategyHistoryJson|default([], true)}|tojson }}</script>
 <script>
@@ -729,7 +740,7 @@ this.classList.add('active');
 filterStocks(this.dataset.parent,this.dataset.key)
 })});
 
-function filterStocks(l1,l2){const TOP=10;const cards=document.querySelectorAll('#stockList .stock-card');let vis=[];cards.forEach(card=>{const cats=JSON.parse(card.dataset.categories||'[]'),sts=JSON.parse(card.dataset.strategytypes||'[]'),mls=JSON.parse(card.dataset.mlmodels||'[]');let s=false;if(l1==='策略信号'){if(cats.includes('策略信号'))s=l2?sts.some(t=>t.groupKey===l2||t.name===l2):true}else if(l1==='ML模型信号'){if(cats.includes('ML模型信号'))s=l2?mls.some(m=>m.key===l2):true}else if(l2){const chip=document.querySelector('#level2Tabs .sub-chip[data-key="'+l2+'"]');const raw=chip?chip.textContent:'',label=raw.replace(/\d+$/,'').replace(/[·\s]/g,'').trim();s=cats.includes(l1)&&sts.some(t=>t.name.replace(/[·\s]/g,'')===label)}else{s=cats.includes(l1)}if(s)vis.push({card,score:parseInt(card.dataset.score)||0})});const matched=vis.length;if(l2){vis.sort((a,b)=>b.score-a.score);vis=vis.slice(0,TOP)}cards.forEach(c=>c.style.display='none');vis.forEach(v=>v.card.style.display='');const meta=document.getElementById('stockResultsMeta');if(meta)meta.textContent=matched>vis.length?'共 '+matched+' 只 · 展示评分前 '+vis.length+' 只':'共 '+vis.length+' 只'}
+function filterStocks(l1,l2){const list=document.getElementById('stockList');if(window.ResearchWorkspace)window.ResearchWorkspace.clearExpandedCharts(list);const TOP=10;const cards=document.querySelectorAll('#stockList .stock-card');let vis=[];cards.forEach(card=>{const cats=JSON.parse(card.dataset.categories||'[]'),sts=JSON.parse(card.dataset.strategytypes||'[]'),mls=JSON.parse(card.dataset.mlmodels||'[]');let s=false;if(l1==='策略信号'){if(cats.includes('策略信号'))s=l2?sts.some(t=>t.groupKey===l2||t.name===l2):true}else if(l1==='ML模型信号'){if(cats.includes('ML模型信号'))s=l2?mls.some(m=>m.key===l2):true}else if(l2){const chip=document.querySelector('#level2Tabs .sub-chip[data-key="'+l2+'"]');const raw=chip?chip.textContent:'',label=raw.replace(/\d+$/,'').replace(/[·\s]/g,'').trim();s=cats.includes(l1)&&sts.some(t=>t.name.replace(/[·\s]/g,'')===label)}else{s=cats.includes(l1)}if(s)vis.push({card,score:parseInt(card.dataset.score)||0})});const matched=vis.length;if(l2){vis.sort((a,b)=>b.score-a.score);vis=vis.slice(0,TOP)}cards.forEach(c=>c.style.display='none');vis.forEach(v=>v.card.style.display='');const meta=document.getElementById('stockResultsMeta');if(meta)meta.textContent=matched>vis.length?'共 '+matched+' 只 · 展示评分前 '+vis.length+' 只':'共 '+vis.length+' 只'}
 
 // === 日线/资金走势（插入到卡片外部，跨整行全宽）===
 function toggleKline(card){
@@ -885,6 +896,6 @@ function renderSector(date,secs){const data=window._sdata,c=document.getElementB
 function switchSector(d){const data=window._sdata;if(!data)return;const secs=(data.data[d]&&data.data[d].sectors)||[];if(secs.length){window._sdate=d;renderSector(d,secs)}}
 function toggleSectorStocks(date,el){let existing=document.querySelector('.sector-stocks-area');if(existing){if(existing.previousElementSibling===el){existing.remove();return}else{existing.remove()}}area=document.createElement('div');area.className='sector-stocks-area';area.style.cssText='margin:0 0 6px 0;padding:8px 10px;background:#fafbfc;border-radius:8px;border:1px solid #e0e0e0;max-height:360px;overflow-y:auto';const data=window._sdata;const name=el.querySelector('.sname').textContent;const sectors=(data.data[date]&&data.data[date].sectors)||[];const sec=sectors.find(s=>s.name===name);const stocks=(sec&&sec.limit_stocks)||[];let hdr='<div style="display:flex;align-items:center;margin-bottom:6px;font-size:12px;color:#666"><b style="color:#1a1a2e">'+name+'</b> 涨停股明细 <span style="font-size:10px;color:#aaa;margin-left:auto;cursor:pointer" onclick="this.closest(\'.sector-stocks-area\').remove()">✕ 收起</span></div>';if(!stocks.length){hdr+='<div style="font-size:11px;color:#aaa;text-align:center;padding:10px">该板块暂无涨停股数据（运行 sector_heat.py --json 获取成分股）</div>'}else{let t='<table style="width:100%;font-size:11px;border-collapse:collapse"><thead><tr style="color:#888"><th style="text-align:left;padding:4px 6px">股票</th><th style="text-align:left;padding:4px 6px">行业</th><th style="text-align:right;padding:4px 6px">涨幅</th><th style="text-align:right;padding:4px 6px">连板</th><th style="text-align:right;padding:4px 6px">市值(亿)</th></tr></thead><tbody>';stocks.forEach(s=>{t+='<tr style="border-top:1px solid #f0f0f0"><td style="padding:5px 6px"><b style="color:#1a1a2e">'+s.name+'</b><span style="color:#bbb;font-size:10px;margin-left:4px">'+(s.ts_code||'').replace('.SH','').replace('.SZ','')+'</span></td><td style="padding:5px 6px;color:#666">'+(s.industry||'')+'</td><td style="padding:5px 6px;text-align:right;color:#ef4444;font-weight:600">+'+s.pct_chg+'%</td><td style="padding:5px 6px;text-align:right;font-weight:600;color:'+(s.limit_times>=3?'#ef4444':'#666')+'">'+(s.limit_times||0)+'板</td><td style="padding:5px 6px;text-align:right;color:#888">'+(s.float_mv||'')+'</td></tr>'});t+='</tbody></table>';hdr+=t}area.innerHTML=hdr;el.after(area)}
 </script>
-<script src="{{ url_for('static', filename='research_workspace.js') }}?v=20261005-1" defer></script>
+<script src="{{ url_for('static', filename='research_workspace.js') }}?v=20261005-disclosure1" defer></script>
 </body>
 </html>

@@ -12,7 +12,7 @@ import json
 import math
 import re
 import statistics
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Any, Iterable
 
@@ -24,6 +24,18 @@ _SOURCE_FILES = {
     "sector": ("板块热度", "sector_heat.json", 72 * 60),
     "ladder": ("连板天梯", "limit_up_ladder.json", 72 * 60),
 }
+
+# 上海证券交易所公布的 2026 年 A 股休市区间。周末另行统一判断。
+# 这里只用于页面状态表达，不参与扫描、行情或策略计算。
+_SSE_2026_CLOSED_RANGES = (
+    (date(2026, 1, 1), date(2026, 1, 3)),
+    (date(2026, 2, 15), date(2026, 2, 23)),
+    (date(2026, 4, 4), date(2026, 4, 6)),
+    (date(2026, 5, 1), date(2026, 5, 5)),
+    (date(2026, 6, 19), date(2026, 6, 21)),
+    (date(2026, 9, 25), date(2026, 9, 27)),
+    (date(2026, 10, 1), date(2026, 10, 7)),
+)
 
 
 def _number(value: Any) -> float | None:
@@ -96,25 +108,106 @@ def _source_health(root: Path, now: datetime) -> dict[str, dict[str, Any]]:
         item: dict[str, Any] = {
             "key": key, "label": label, "file": filename, "status": "missing",
             "dataTime": "", "ageMinutes": None, "message": "文件不存在",
+            "sourceName": label, "lastSuccessAt": "", "statusLabel": "缺失",
+            "delayed": True, "failureReason": "文件不存在",
         }
         payload, error = _read_json(path)
         if payload is None:
             if error != "missing":
-                item.update(status="error", message=f"读取失败：{error}")
+                message = f"读取失败：{error}"
+                item.update(status="error", statusLabel="错误", message=message, failureReason=message)
             result[key] = item
             continue
         data_time = _payload_time(payload, path)
         age = (now - data_time).total_seconds() / 60
         item["dataTime"] = data_time.strftime("%Y-%m-%d %H:%M:%S")
+        item["lastSuccessAt"] = item["dataTime"]
         item["ageMinutes"] = round(age, 1)
         if age < -5:
-            item.update(status="future", message="数据时间晚于当前时间")
+            item.update(status="future", statusLabel="时间异常", delayed=True,
+                        message="数据时间晚于当前时间", failureReason="数据时间晚于当前时间")
         elif age > stale_minutes:
-            item.update(status="stale", message="数据已过期，页面继续使用最近快照")
+            item.update(status="stale", statusLabel="延迟", delayed=True,
+                        message="数据已过期，页面继续使用最近快照",
+                        failureReason="超过预期更新时效，正在显示最近快照")
         else:
-            item.update(status="ok", message="数据可用")
+            item.update(status="ok", statusLabel="正常", delayed=False,
+                        message="数据可用", failureReason="")
         result[key] = item
     return result
+
+
+def _known_trading_day(day: date) -> bool | None:
+    """Return the exchange-open state when the local calendar is authoritative."""
+    if day.weekday() >= 5:
+        return False
+    if day.year != 2026:
+        return None
+    return not any(start <= day <= end for start, end in _SSE_2026_CLOSED_RANGES)
+
+
+def _previous_open_day(day: date) -> date:
+    candidate = day
+    for _ in range(370):
+        state = _known_trading_day(candidate)
+        if state is True or (state is None and candidate.weekday() < 5):
+            return candidate
+        candidate -= timedelta(days=1)
+    return day
+
+
+def _market_session(now: datetime, sources: dict[str, dict[str, Any]], breadth: dict[str, Any]) -> dict[str, Any]:
+    source_times = [
+        parsed for parsed in (_parse_datetime(item.get("lastSuccessAt")) for item in sources.values())
+        if parsed and parsed <= now
+    ]
+    last_success = max(source_times) if source_times else None
+    candidate_days = [parsed.date() for parsed in source_times]
+    breadth_day = _parse_datetime(breadth.get("tradeDate"))
+    if breadth_day:
+        candidate_days.append(breadth_day.date())
+
+    calendar_state = _known_trading_day(now.date())
+    most_recent_open = _previous_open_day(now.date())
+    latest_candidate = max(candidate_days) if candidate_days else None
+    if calendar_state is False:
+        latest_day = min(latest_candidate, most_recent_open) if latest_candidate else most_recent_open
+        state, label = "closed", "市场休市中"
+    else:
+        latest_day = latest_candidate or most_recent_open
+        intraday_time = _parse_datetime((sources.get("intraday") or {}).get("lastSuccessAt"))
+        same_day_intraday = bool(intraday_time and intraday_time.date() == now.date())
+        intraday_fresh = same_day_intraday and (now - intraday_time).total_seconds() <= 15 * 60
+        has_today_data = any(item.date() == now.date() for item in source_times)
+        minute_of_day = now.hour * 60 + now.minute
+        if 9 * 60 + 15 <= minute_of_day <= 15 * 60 + 30 and intraday_fresh:
+            state, label = "intraday", "盘中实时"
+        elif minute_of_day >= 15 * 60 and has_today_data:
+            state, label = "after_close", "盘后快照"
+        elif minute_of_day < 9 * 60 + 15 and latest_day == most_recent_open and latest_day < now.date():
+            state, label = "preopen", "开市前快照"
+        else:
+            state, label = "delayed", "数据延迟"
+        if calendar_state is None and state != "intraday":
+            state, label = "delayed", "数据延迟（交易日待确认）"
+
+    latest_text = latest_day.isoformat() if latest_day else "--"
+    last_text = last_success.strftime("%Y-%m-%d %H:%M:%S") if last_success else "--"
+    if state == "closed":
+        display = f"最近交易日：{latest_text} · 市场休市中 · 下次更新：开市日 18:30"
+    else:
+        display = f"最近交易日：{latest_text} · {label} · 最后成功更新：{last_text}"
+    return {
+        "latestTradeDate": latest_text,
+        "state": state,
+        "stateLabel": label,
+        "displayText": display,
+        "lastSuccessAt": last_text,
+        "nextUpdate": "开市日 18:30" if state == "closed" else "每日 18:30",
+        "isTradingDay": calendar_state is True,
+        "isDelayed": state == "delayed",
+        "calendarSource": "SSE 2026 休市安排" if now.year == 2026 else "本地日期与数据状态",
+    }
 
 
 def _snapshot_paths(root: Path, now: datetime | None = None) -> list[Path]:
@@ -193,15 +286,32 @@ def build_workspace_overview(project_root: str | Path, now: datetime | None = No
     root = Path(project_root)
     current = now or datetime.now()
     sources = _source_health(root, current)
+    breadth = _breadth(root, current)
+    market_session = _market_session(current, sources, breadth)
     healthy = sum(item["status"] == "ok" for item in sources.values())
     return {
         "success": True,
         "generatedAt": current.strftime("%Y-%m-%d %H:%M:%S"),
-        "breadth": _breadth(root, current),
+        "breadth": breadth,
         "sources": sources,
         "healthySources": healthy,
         "totalSources": len(sources),
         "degraded": healthy != len(sources),
+        "marketSession": market_session,
+        "shareSummary": {
+            "title": "每日市场摘要",
+            "tradeDate": market_session["latestTradeDate"],
+            "status": market_session["stateLabel"],
+            "generatedAt": current.strftime("%Y-%m-%d %H:%M:%S"),
+            "metrics": {
+                "advances": breadth.get("advances", 0),
+                "declines": breadth.get("declines", 0),
+                "limitUp": breadth.get("limitUp", 0),
+                "limitDown": breadth.get("limitDown", 0),
+                "temperature": breadth.get("temperature", "暂无"),
+            },
+            "disclaimer": "策略结果基于历史数据和规则计算，仅供研究，不构成投资建议。",
+        },
     }
 
 

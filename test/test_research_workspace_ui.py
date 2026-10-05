@@ -49,6 +49,28 @@ class ResearchWorkspaceUiTest(unittest.TestCase):
         labels = [tab.get_text(" ", strip=True) for tab in soup.select("#mainTabs .main-tab")]
         self.assertEqual(labels[:4], ["📊 策略扫描", "⚡ 盘中实时", "📈 策略复盘", "⭐ 个人观察"])
 
+    def test_page_has_clear_market_status_risk_and_share_metadata(self):
+        soup = self.render_home()
+        self.assertEqual(soup.title.string, "A 股策略实验室｜市场观察与策略研究")
+        self.assertTrue(soup.select_one('meta[name="description"]').get("content"))
+        self.assertEqual(soup.select_one('meta[property="og:site_name"]').get("content"), "策略实验室")
+        self.assertIn("strategy-lab-share", soup.select_one('meta[property="og:image"]').get("content"))
+        self.assertIn("最近交易日：2026-10-05", soup.select_one("#marketSessionStatus").get_text(" ", strip=True))
+        self.assertIsNotNone(soup.select_one("#methodologyButton"))
+        self.assertIsNotNone(soup.select_one("#dailySummaryButton"))
+        risk = soup.select_one("#researchRiskNotice").get_text(" ", strip=True)
+        self.assertIn("不构成投资建议", risk)
+        self.assertIn("历史表现不代表未来收益", risk)
+        self.assertIn("独立判断并自行承担风险", risk)
+
+    def test_watchlist_and_score_disclosures_are_visible_without_crowding_cards(self):
+        soup = self.render_home()
+        warning = soup.select_one("#watchlistStorageNotice").get_text(" ", strip=True)
+        self.assertIn("仅保存在当前浏览器", warning)
+        self.assertIn("清理浏览器数据后可能丢失", warning)
+        score = soup.select_one("#stockList button[data-workspace-action='score-info']")
+        self.assertEqual(score.get_text(" ", strip=True), "评分说明")
+
     def test_accessible_search_watchlist_alert_and_drawer_landmarks_exist(self):
         soup = self.render_home()
         search = soup.select_one("#globalStockSearch")
@@ -76,7 +98,7 @@ class ResearchWorkspaceUiTest(unittest.TestCase):
         self.assertEqual(payload["stocks"][0]["code"], "600001")
         self.assertEqual(payload["strategies"][0]["strategy"], "测试策略")
         scripts = [tag.get("src", "") for tag in soup.find_all("script")]
-        self.assertTrue(any(src.endswith("/static/research_workspace.js?v=20261005-1") for src in scripts))
+        self.assertTrue(any(src.endswith("/static/research_workspace.js?v=20261005-disclosure1") for src in scripts))
 
     def test_strategy_comparison_landmarks_are_in_replay_panel(self):
         soup = self.render_home()
@@ -155,6 +177,54 @@ console.log(JSON.stringify({invalid:ws.toggleWatchlist([],{}),writes,value}));
         self.assertEqual(value["invalid"], [])
         self.assertEqual(value["writes"], 0)
         self.assertEqual(value["value"], "☆")
+
+    def test_switching_strategy_clears_the_previously_expanded_chart(self):
+        root = Path(__file__).resolve().parents[1]
+        program = r"""
+const ws=require('./static/research_workspace.js');
+const removed=[];
+const collapsed=[];
+const view={
+  querySelectorAll(selector){
+    if(selector==='.kline-area') return [{remove:()=>removed.push('chart')}];
+    if(selector==='.stock-card.is-expanded') return [{classList:{remove:name=>collapsed.push(name)}}];
+    return [];
+  }
+};
+ws.clearExpandedCharts(view);
+console.log(JSON.stringify({removed,collapsed}));
+"""
+        result = subprocess.run(["node", "-e", program], cwd=root, text=True, capture_output=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(json.loads(result.stdout), {"removed": ["chart"], "collapsed": ["is-expanded"]})
+
+        soup = self.render_home()
+        inline_scripts = "\n".join(tag.string or "" for tag in soup.find_all("script") if not tag.get("src"))
+        self.assertIn("const list=document.getElementById('stockList')", inline_scripts)
+        self.assertIn("ResearchWorkspace.clearExpandedCharts(list)", inline_scripts)
+
+    def test_javascript_exposes_strategy_glossary_search_states_and_session_text(self):
+        root = Path(__file__).resolve().parents[1]
+        program = r"""
+const ws=require('./static/research_workspace.js');
+const definition=ws.findStrategyDefinition('30分钟缠论二买');
+console.log(JSON.stringify({
+  definition,
+  loading:ws.searchStateMarkup('loading','宁德时代'),
+  empty:ws.searchStateMarkup('empty','不存在'),
+  error:ws.searchStateMarkup('error','宁德时代','网络异常'),
+  session:ws.marketSessionText({latestTradeDate:'2026-10-08',stateLabel:'盘中实时',lastSuccessAt:'2026-10-08 10:29:00'})
+}));
+"""
+        result = subprocess.run(["node", "-e", program], cwd=root, text=True, capture_output=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        value = json.loads(result.stdout)
+        self.assertEqual(value["definition"]["title"], "缠论二买")
+        self.assertTrue(all(value["definition"].get(key) for key in ("logic", "period", "environment", "risks")))
+        self.assertIn("正在搜索", value["loading"])
+        self.assertIn("没有找到", value["empty"])
+        self.assertIn("重新搜索", value["error"])
+        self.assertIn("最后成功更新：2026-10-08 10:29:00", value["session"])
 
 
 if __name__ == "__main__":

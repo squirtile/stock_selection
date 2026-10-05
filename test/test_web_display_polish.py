@@ -54,7 +54,7 @@ class WebDisplayPolishTest(unittest.TestCase):
 
     def test_header_distinguishes_data_date_from_page_refresh_time(self):
         soup = self.render_home()
-        self.assertIn("数据日期 2026-10-02", soup.select_one(".status-row .time").get_text(" ", strip=True))
+        self.assertIn("最近交易日：2026-10-02", soup.select_one(".status-row .time").get_text(" ", strip=True))
         refresh_time = soup.select_one("#pageRefreshTime")
         self.assertIsNotNone(refresh_time)
         self.assertEqual(refresh_time.get("aria-live"), "polite")

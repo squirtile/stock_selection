@@ -80,6 +80,67 @@ class ResearchWorkspaceTest(unittest.TestCase):
         result = build_workspace_overview(self.root, now=datetime(2026, 10, 5, 15, 0))
         self.assertEqual(result["sources"]["intraday"]["status"], "stale")
         self.assertEqual(result["sources"]["intraday"]["dataTime"], "2026-10-02 14:59:00")
+        self.assertNotEqual(result["sources"]["intraday"]["failureReason"], "文件不存在")
+        self.assertIn("超过预期更新时效", result["sources"]["intraday"]["failureReason"])
+
+    def test_market_session_marks_confirmed_holiday_without_treating_snapshot_as_live(self):
+        from tools.research_workspace import build_workspace_overview
+
+        self.write_snapshot(day="20260930", rows=[
+            {"代码": "600001", "名称": "甲", "最新价": 10, "涨跌幅": 1,
+             "行业": "电子", "总市值_亿元": 10, "交易日": "20260930"},
+        ])
+        self.write_json("mini_program_stocks.json", {"time": "2026-09-30 18:30:00", "stocks": []})
+
+        result = build_workspace_overview(self.root, now=datetime(2026, 10, 5, 10, 0))
+
+        session = result["marketSession"]
+        self.assertEqual(session["state"], "closed")
+        self.assertEqual(session["latestTradeDate"], "2026-09-30")
+        self.assertEqual(
+            session["displayText"],
+            "最近交易日：2026-09-30 · 市场休市中 · 下次更新：开市日 18:30",
+        )
+
+    def test_market_session_distinguishes_intraday_after_close_and_delayed(self):
+        from tools.research_workspace import build_workspace_overview
+
+        self.write_snapshot(day="20261008", rows=[
+            {"代码": "600001", "名称": "甲", "最新价": 10, "涨跌幅": 1,
+             "行业": "电子", "总市值_亿元": 10, "交易日": "20261008"},
+        ])
+        self.write_json("intraday_candidates.json", {"time": "2026-10-08 10:29:00", "stocks": []})
+        intraday = build_workspace_overview(self.root, now=datetime(2026, 10, 8, 10, 30))["marketSession"]
+        self.assertEqual(intraday["state"], "intraday")
+        self.assertIn("盘中实时", intraday["displayText"])
+        self.assertEqual(intraday["lastSuccessAt"], "2026-10-08 10:29:00")
+
+        self.write_json("mini_program_stocks.json", {"time": "2026-10-08 18:30:00", "stocks": []})
+        after_close = build_workspace_overview(self.root, now=datetime(2026, 10, 8, 18, 40))["marketSession"]
+        self.assertEqual(after_close["state"], "after_close")
+        self.assertIn("盘后快照", after_close["displayText"])
+
+        delayed = build_workspace_overview(self.root, now=datetime(2026, 10, 9, 10, 30))["marketSession"]
+        self.assertEqual(delayed["state"], "delayed")
+        self.assertIn("数据延迟", delayed["displayText"])
+
+    def test_source_status_exposes_success_delay_and_failure_reason_fields(self):
+        from tools.research_workspace import build_workspace_overview
+
+        self.write_json("intraday_candidates.json", {"time": "2026-10-08 10:29:00", "stocks": []})
+        (self.root / "output" / "money_flow.json").write_text("{broken", encoding="utf-8")
+        result = build_workspace_overview(self.root, now=datetime(2026, 10, 8, 10, 30))
+
+        live = result["sources"]["intraday"]
+        broken = result["sources"]["moneyflow"]
+        self.assertEqual(live["sourceName"], "盘中实时")
+        self.assertEqual(live["lastSuccessAt"], "2026-10-08 10:29:00")
+        self.assertFalse(live["delayed"])
+        self.assertEqual(live["failureReason"], "")
+        self.assertTrue(broken["delayed"])
+        self.assertIn("读取失败", broken["failureReason"])
+        self.assertIn("shareSummary", result)
+        self.assertEqual(result["shareSummary"]["tradeDate"], result["marketSession"]["latestTradeDate"])
 
     def test_dated_source_rows_take_precedence_over_new_generation_time(self):
         from tools.research_workspace import build_workspace_overview

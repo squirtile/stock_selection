@@ -4,6 +4,53 @@
     const WATCH_KEY = 'strategy-lab-watchlist-v1';
     const READ_KEY = 'strategy-lab-read-alerts-v1';
 
+    const STRATEGY_GLOSSARY = [
+        { keys: ['缠论二买', '缠论2买'], title: '缠论二买', logic: '下跌段结束后出现第一类买点反弹，回调未创新低并再次转强。', period: '当前系统主要观察 30 分钟与 60 分钟周期。', environment: '更适合趋势企稳、回调结构清晰且成交不过度失真的阶段。', risks: '结构可能继续延伸或重新破底，盘中未完成形态可能发生变化。' },
+        { keys: ['缠论三买', '缠论3买'], title: '缠论三买', logic: '价格离开中枢后回踩不重新进入中枢，并出现继续上行信号。', period: '当前系统主要观察 30 分钟与 60 分钟周期。', environment: '更适合已有上升结构、突破后回踩确认的行情。', risks: '假突破、回踩重新进入中枢及高位追涨风险。' },
+        { keys: ['MACD金叉背离', 'MACD金叉底背离'], title: 'MACD 金叉背离', logic: '价格与动能出现底背离特征，同时 MACD 形成金叉确认。', period: '当前系统主要用于 30 分钟与 60 分钟结构。', environment: '适合下跌动能衰减、市场风险偏好趋稳的阶段。', risks: '背离可能连续钝化，金叉也可能在弱势趋势中快速失效。' },
+        { keys: ['二波埋伏', '二波形态'], title: '二波埋伏', logic: '第一波上涨后回调整理，寻找量价企稳与潜在二次启动结构。', period: '以日线结构为主，结合盘中信号观察。', environment: '适合主线仍有持续性、回调缩量且关键位置未破坏的市场。', risks: '题材退潮、回调转为趋势反转或二次启动失败。' },
+        { keys: ['主升-大阳回调不破10日线'], title: '主升回调不破 10 日线', logic: '大阳线或主升启动后回调，价格仍守住 10 日均线附近。', period: '日线策略。', environment: '适合趋势明确、板块有延续且回调有承接的行情。', risks: '均线支撑失效、主升结束或高位补跌。' },
+        { keys: ['底部稳定量能', '底部放量'], title: '底部稳定量能与放量', logic: '底部阶段量能长期平稳后出现明显放量，并参考前期试盘痕迹。', period: '日线筛选，盘中观察当日量能确认。', environment: '适合低位整理充分、波动收敛后出现资金关注的阶段。', risks: '放量可能来自出货或事件冲击，低位结构也可能继续下移。' }
+    ];
+
+    function escapeText(value) {
+        return String(value == null ? '' : value)
+            .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+            .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+    }
+
+    function findStrategyDefinition(name) {
+        const text = String(name || '').replace(/\s/g, '');
+        return STRATEGY_GLOSSARY.find(item => item.keys.some(key => text.includes(key))) || {
+            title: String(name || '策略标签'),
+            logic: '该标签由现有策略规则计算生成，具体条件以当前策略实现为准。',
+            period: '以标签标注或当前扫描周期为准。',
+            environment: '需结合趋势、量价和整体市场环境综合观察。',
+            risks: '规则信号可能失效，且不代表未来收益概率。'
+        };
+    }
+
+    function searchStateMarkup(state, query, message) {
+        const safeQuery = escapeText(query);
+        if (state === 'loading') return '<div class="search-empty search-loading">正在搜索“' + safeQuery + '”…</div>';
+        if (state === 'error') return '<div class="search-empty search-error">搜索失败：' + escapeText(message || '接口暂时不可用') + '<button type="button" class="search-retry" data-search-retry>重新搜索</button></div>';
+        return '<div class="search-empty">没有找到“' + safeQuery + '”的本地股票资料</div>';
+    }
+
+    function marketSessionText(session) {
+        const value = session || {};
+        if (value.displayText) return String(value.displayText);
+        const day = value.latestTradeDate || '--';
+        if (value.state === 'closed') return '最近交易日：' + day + ' · 市场休市中 · 下次更新：开市日 18:30';
+        return '最近交易日：' + day + ' · ' + (value.stateLabel || '数据状态待确认') + ' · 最后成功更新：' + (value.lastSuccessAt || '--');
+    }
+
+    function clearExpandedCharts(root) {
+        if (!root || typeof root.querySelectorAll !== 'function') return;
+        root.querySelectorAll('.kline-area').forEach(area => area.remove());
+        root.querySelectorAll('.stock-card.is-expanded').forEach(card => card.classList.remove('is-expanded'));
+    }
+
     function loadStoredArray(storage, key) {
         try {
             if (!storage || typeof storage.getItem !== 'function') return [];
@@ -99,7 +146,7 @@
         button.setAttribute('aria-pressed', active ? 'true' : 'false');
     }
 
-    const api = { loadStoredArray, toggleWatchlist, uniqueAlerts, selectStrategyKeys, buildStrategyComparison, marketOverviewModel, updateWatchButton };
+    const api = { loadStoredArray, toggleWatchlist, uniqueAlerts, selectStrategyKeys, buildStrategyComparison, marketOverviewModel, updateWatchButton, findStrategyDefinition, searchStateMarkup, marketSessionText, clearExpandedCharts, buildDailySummary };
     if (typeof module !== 'undefined' && module.exports) module.exports = api;
     global.ResearchWorkspace = api;
 
@@ -125,10 +172,11 @@
     let currentAlerts = [];
     let overviewCache = null;
     let selectedStrategies = [];
+    let alertsLoadError = '';
+    let lastSearchQuery = '';
+    let searchRequestId = 0;
 
-    const esc = value => String(value == null ? '' : value)
-        .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
-        .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+    const esc = escapeText;
     const fmt = (value, digits = 2) => Number.isFinite(Number(value)) ? Number(value).toFixed(digits) : '--';
 
     function saveArray(key, value) {
@@ -189,11 +237,11 @@
         saveArray(WATCH_KEY, watchlist);
         syncWatchButtons();
         renderWatchlist();
-        fetchAlerts();
+        fetchAlerts().catch(() => {});
     }
 
     function addCardActions(card) {
-        if (!card || card.querySelector('[data-workspace-action]')) return;
+        if (!card) return;
         const code = String(card.dataset.code || '');
         const nameNode = card.querySelector('.name');
         const name = nameNode ? nameNode.textContent.trim() : code;
@@ -206,6 +254,17 @@
             if (score) side.appendChild(score);
             card.appendChild(side);
         }
+        if (!side.querySelector('[data-workspace-action="score-info"]')) {
+            const scoreHelp = document.createElement('button');
+            scoreHelp.type = 'button';
+            scoreHelp.className = 'score-help';
+            scoreHelp.dataset.workspaceAction = 'score-info';
+            scoreHelp.dataset.code = code;
+            scoreHelp.dataset.name = name;
+            scoreHelp.textContent = '评分说明';
+            side.appendChild(scoreHelp);
+        }
+        if (side.querySelector('.card-actions')) return;
         const actions = document.createElement('div');
         actions.className = 'card-actions';
         actions.innerHTML = '<button type="button" data-workspace-action="watch" data-code="' + esc(code) + '" data-name="' + esc(name) + '" aria-label="收藏' + esc(name) + '" title="加入个人观察">☆</button>' +
@@ -213,8 +272,18 @@
         side.appendChild(actions);
     }
 
+    function decorateStrategyTags() {
+        document.querySelectorAll('.s-tag:not([data-strategy-info])').forEach(tag => {
+            tag.dataset.strategyInfo = tag.textContent.trim();
+            tag.setAttribute('role', 'button');
+            tag.setAttribute('tabindex', '0');
+            tag.setAttribute('title', '查看策略释义');
+        });
+    }
+
     function decorateCards() {
         document.querySelectorAll('.stock-card').forEach(addCardActions);
+        decorateStrategyTags();
         syncWatchButtons();
     }
 
@@ -245,6 +314,65 @@
         document.body.classList.add('drawer-open');
         const close = drawer.querySelector('.drawer-close');
         if (close) close.focus();
+    }
+
+    function showUtility(title, subtitle, html) {
+        openDrawer('workspaceUtilityDrawer');
+        document.getElementById('utilityDrawerTitle').textContent = title;
+        document.getElementById('utilityDrawerSubtitle').textContent = subtitle;
+        document.getElementById('utilityDrawerBody').innerHTML = html;
+    }
+
+    function openMethodology() {
+        showUtility('数据与回测口径', '理解评分、胜率、涨幅和更新时间的含义',
+            '<section class="research-section"><h3>策略与评分</h3><p class="research-note">策略结果来自既有规则对历史或当前行情的计算。评分综合趋势、量价、策略共振、板块热度和资金表现等现有维度，仅用于研究排序，不代表未来收益概率或投资建议。</p></section>' +
+            '<section class="research-section"><h3>历史统计</h3><p class="research-note">胜率必须结合页面显示的命中数/已评价样本数、统计区间和观察周期理解；平均涨幅按已评价样本计算。样本少、市场环境变化或数据缺失都会造成偏差，历史表现不代表未来收益。</p></section>' +
+            '<section class="research-section"><h3>行情与更新时间</h3><p class="research-note">盘中实时、盘后快照与延迟数据按最后成功时间区分。接口失败时页面可能继续展示最近快照，并明确标记延迟；页面刷新时间不等于行情成功更新时间。</p></section>' +
+            '<div class="drawer-disclaimer">以上信息仅用于方法说明，请独立判断并自行承担风险。</div>');
+    }
+
+    function openStrategyDefinition(name) {
+        const item = findStrategyDefinition(name);
+        showUtility(item.title, '策略标签释义 · 不改变原有策略条件',
+            '<section class="research-section definition-grid"><div><span>核心逻辑</span><p>' + esc(item.logic) + '</p></div><div><span>适用周期</span><p>' + esc(item.period) + '</p></div><div><span>适用环境</span><p>' + esc(item.environment) + '</p></div><div><span>主要风险</span><p>' + esc(item.risks) + '</p></div></section>' +
+            '<div class="drawer-disclaimer">策略释义用于帮助理解标签，不构成荐股或收益承诺。</div>');
+    }
+
+    function openScoreInfo(code, name) {
+        showUtility('评分说明', (name || code) + ' · 评分仅用于研究排序',
+            '<div class="empty state-panel state-loading"><div class="icon">📐</div><div class="text">正在读取评分依据…</div></div>');
+        getJson('/api/stock/' + encodeURIComponent(code) + '/research').then(data => {
+            document.getElementById('utilityDrawerBody').innerHTML =
+                '<section class="research-section"><h3>构成维度</h3><p class="research-note">综合现有策略中的趋势、量价、策略共振、板块热度、资金表现及置信度修正。没有数据的维度不会被臆测补齐。</p></section>' +
+                renderScore(data.scoreExplanation || {}) +
+                '<div class="drawer-disclaimer">评分仅用于研究结果排序，不代表上涨概率、未来收益或投资建议。</div>';
+        }).catch(error => {
+            document.getElementById('utilityDrawerBody').innerHTML = '<div class="empty state-panel state-error"><div class="icon">⚠️</div><div class="text">评分依据加载失败</div><div class="hint">' + esc(error.message) + '</div><button type="button" class="state-action" data-score-retry data-code="' + esc(code) + '" data-name="' + esc(name) + '">重试</button></div>';
+        });
+    }
+
+    function buildDailySummary(data) {
+        const summary = data && data.shareSummary || {};
+        const metrics = summary.metrics || {};
+        return '策略实验室｜每日市场摘要\n' +
+            '最近交易日：' + (summary.tradeDate || '--') + ' · ' + (summary.status || '状态待确认') + '\n' +
+            '上涨 ' + Number(metrics.advances || 0) + ' / 下跌 ' + Number(metrics.declines || 0) +
+            ' · 涨停 ' + Number(metrics.limitUp || 0) + ' / 跌停 ' + Number(metrics.limitDown || 0) +
+            ' · 市场温度 ' + (metrics.temperature || '暂无') + '\n' +
+            (summary.disclaimer || '仅供研究，不构成投资建议。');
+    }
+
+    function openDailySummary() {
+        showUtility('每日市场摘要', '已预留分享卡片数据，不会自动发布',
+            '<div class="empty state-panel state-loading"><div class="icon">🗒️</div><div class="text">正在整理摘要…</div></div>');
+        const promise = overviewCache ? Promise.resolve(overviewCache) : getJson('/api/workspace/overview');
+        promise.then(data => {
+            overviewCache = data;
+            const summary = buildDailySummary(data);
+            document.getElementById('utilityDrawerBody').innerHTML = '<section class="daily-summary-card"><pre>' + esc(summary) + '</pre><button type="button" class="state-action" data-copy-summary>复制摘要</button></section><p class="research-note">这里仅生成可复制的研究摘要，不执行任何自动发布。</p>';
+        }).catch(error => {
+            document.getElementById('utilityDrawerBody').innerHTML = '<div class="empty state-panel state-error"><div class="icon">⚠️</div><div class="text">摘要生成失败</div><div class="hint">' + esc(error.message) + '</div><button type="button" class="state-action" data-summary-retry>重试</button></div>';
+        });
     }
 
     function renderScore(explanation) {
@@ -305,12 +433,15 @@
         const subtitle = document.getElementById('utilityDrawerSubtitle');
         const body = document.getElementById('utilityDrawerBody');
         title.textContent = '信号提醒';
-        subtitle.textContent = '仅提醒当前浏览器观察池中的股票';
+        subtitle.textContent = '观察池、已读状态均仅保存在当前浏览器';
         const state = uniqueAlerts(currentAlerts, readAlertIds);
-        if (!state.all.length) {
-            body.innerHTML = '<div class="empty state-panel"><div class="icon">🔔</div><div class="text">暂无观察池信号</div><div class="hint">收藏股票后，日报或盘中命中会显示在这里</div></div>';
+        const notice = '<div class="browser-storage-notice">触发条件：观察池股票进入每日策略或盘中实时结果。提醒与已读状态不会云端同步，清理浏览器数据后可能丢失。</div>';
+        if (alertsLoadError) {
+            body.innerHTML = notice + '<div class="empty state-panel state-error"><div class="icon">⚠️</div><div class="text">提醒加载失败</div><div class="hint">' + esc(alertsLoadError) + '</div><button type="button" class="state-action" data-alerts-retry>重试</button></div>';
+        } else if (!state.all.length) {
+            body.innerHTML = notice + '<div class="empty state-panel"><div class="icon">🔔</div><div class="text">暂无观察池信号</div><div class="hint">收藏股票后，命中上述条件时会显示在这里</div></div>';
         } else {
-            body.innerHTML = '<div class="alert-list">' + state.all.map(alert => '<article class="alert-item' + (state.unread.includes(alert) ? ' is-unread' : '') + '"><span class="alert-dot"></span><div><b>' + esc(alert.name) + ' <small>' + esc(alert.code) + '</small></b><p>' + esc(alert.title) + ' · ' + esc(alert.message) + '</p><time>' + esc(alert.time || '--') + '</time></div></article>').join('') + '</div>';
+            body.innerHTML = notice + '<div class="alert-list">' + state.all.map(alert => '<article class="alert-item' + (state.unread.includes(alert) ? ' is-unread' : '') + '"><span class="alert-dot"></span><div><b>' + esc(alert.name) + ' <small>' + esc(alert.code) + '</small></b><p>' + esc(alert.title) + ' · ' + esc(alert.message) + '</p><time>' + esc(alert.time || '--') + '</time></div></article>').join('') + '</div>';
         }
         if (markRead) {
             readAlertIds = Array.from(new Set(readAlertIds.concat(state.all.map(alert => String(alert.id))))).slice(-500);
@@ -330,23 +461,29 @@
     function fetchAlerts() {
         if (!watchlist.length) {
             currentAlerts = [];
+            alertsLoadError = '';
             updateAlertBadge();
             return Promise.resolve([]);
         }
         return getJson('/api/workspace/alerts?codes=' + encodeURIComponent(watchlist.map(item => item.code).join(','))).then(data => {
             currentAlerts = data.alerts || [];
+            alertsLoadError = '';
             updateAlertBadge();
             return currentAlerts;
-        }).catch(() => {
+        }).catch(error => {
             currentAlerts = [];
+            alertsLoadError = error.message || '接口暂时不可用';
             updateAlertBadge();
-            return [];
+            throw error;
         });
     }
 
     function openAlerts() {
         openDrawer('workspaceUtilityDrawer');
-        renderAlerts(true);
+        document.getElementById('utilityDrawerTitle').textContent = '信号提醒';
+        document.getElementById('utilityDrawerSubtitle').textContent = '观察池、已读状态均仅保存在当前浏览器';
+        document.getElementById('utilityDrawerBody').innerHTML = '<div class="empty state-panel state-loading"><div class="icon">🔔</div><div class="text">正在读取提醒…</div></div>';
+        fetchAlerts().then(() => renderAlerts(true)).catch(() => renderAlerts(false));
     }
 
     function renderSources(data) {
@@ -355,16 +492,20 @@
         const body = document.getElementById('utilityDrawerBody');
         title.textContent = '数据源状态';
         subtitle.textContent = data.degraded ? '部分数据已降级，其他模块仍可使用' : '全部展示数据源可用';
-        const statusNames = { ok: '正常', stale: '过期', future: '时间异常', missing: '缺失', error: '错误' };
-        body.innerHTML = '<div class="source-list">' + Object.values(data.sources || {}).map(source => '<article class="source-item source-' + esc(source.status) + '"><span class="source-status-dot"></span><div><b>' + esc(source.label) + '</b><p>' + esc(source.message) + '</p><time>' + esc(source.dataTime || '暂无更新时间') + ' · ' + esc(source.file) + '</time></div><strong>' + esc(statusNames[source.status] || source.status) + '</strong></article>').join('') + '</div>';
+        const statusNames = { ok: '正常', stale: '延迟', future: '时间异常', missing: '缺失', error: '错误' };
+        const session = data.marketSession || {};
+        body.innerHTML = '<div class="source-session"><b>' + esc(marketSessionText(session)) + '</b><span>交易日历：' + esc(session.calendarSource || '本地状态判断') + '</span></div><div class="source-list">' + Object.values(data.sources || {}).map(source => '<article class="source-item source-' + esc(source.status) + '"><span class="source-status-dot"></span><div><b>' + esc(source.sourceName || source.label) + '</b><p>状态：' + esc(source.statusLabel || statusNames[source.status] || source.status) + ' · 是否延迟：' + (source.delayed ? '是' : '否') + '</p><p>' + esc(source.failureReason || source.message) + '</p><time>最后成功更新：' + esc(source.lastSuccessAt || '暂无') + '<br>来源文件：' + esc(source.file) + '</time></div><strong>' + esc(statusNames[source.status] || source.status) + '</strong></article>').join('') + '</div><button type="button" class="state-action source-retry" data-source-retry>重新检查</button>';
     }
 
     function openSources() {
         openDrawer('workspaceUtilityDrawer');
         document.getElementById('utilityDrawerTitle').textContent = '数据源状态';
         document.getElementById('utilityDrawerBody').innerHTML = '<div class="empty state-panel state-loading"><div class="icon">◉</div><div class="text">正在检查数据源…</div></div>';
-        (overviewCache ? Promise.resolve(overviewCache) : getJson('/api/workspace/overview')).then(renderSources).catch(error => {
-            document.getElementById('utilityDrawerBody').innerHTML = '<div class="empty state-panel state-error"><div class="icon">⚠️</div><div class="text">状态检查失败</div><div class="hint">' + esc(error.message) + '</div></div>';
+        getJson('/api/workspace/overview').then(data => {
+            overviewCache = data;
+            renderSources(data);
+        }).catch(error => {
+            document.getElementById('utilityDrawerBody').innerHTML = '<div class="empty state-panel state-error"><div class="icon">⚠️</div><div class="text">状态检查失败</div><div class="hint">' + esc(error.message) + '</div><button type="button" class="state-action" data-source-retry>重试</button></div>';
         });
     }
 
@@ -373,6 +514,8 @@
         const container = document.getElementById('marketOverview');
         if (!container) return;
         const model = marketOverviewModel(data);
+        const status = document.getElementById('marketSessionStatus');
+        if (status) status.textContent = marketSessionText(data.marketSession || {});
         container.className = 'market-overview market-overview-' + model.state;
         container.innerHTML = '<div class="market-pulse-title"><span class="pulse-dot"></span><b>市场温度 ' + esc(model.temperature) + '</b><small>' + esc(model.tradeDate || '日期暂无') + (model.stale ? ' · 历史快照' : '') + '</small></div>' +
             '<div class="market-pulse-metrics"><span>' + esc(model.breadthText) + '</span><span>' + esc(model.limitText) + '</span><span>' + esc(model.medianText) + '</span><button type="button" id="overviewSourceButton">' + esc(model.sourceText) + '</button></div>';
@@ -385,8 +528,10 @@
             const container = document.getElementById('marketOverview');
             if (container) {
                 container.className = 'market-overview market-overview-degraded';
-                container.innerHTML = '<span class="pulse-dot"></span><b>市场概览暂时不可用</b><span>不影响策略扫描与盘中结果</span>';
+                container.innerHTML = '<span class="pulse-dot"></span><b>市场概览暂时不可用</b><span>未确认最新行情状态，请勿将旧快照视为实时</span><button type="button" class="state-action" data-overview-retry>重试</button>';
             }
+            const status = document.getElementById('marketSessionStatus');
+            if (status) status.textContent = '最近交易日：-- · 数据状态确认失败，请重试';
         });
     }
 
@@ -430,12 +575,12 @@
         });
     }
 
-    function renderSearchResults(rows) {
+    function renderSearchResults(rows, query) {
         const results = document.getElementById('globalSearchResults');
         const input = document.getElementById('globalStockSearch');
         if (!results || !input) return;
         if (!rows.length) {
-            results.innerHTML = '<div class="search-empty">没有找到本地股票资料</div>';
+            results.innerHTML = searchStateMarkup('empty', query || lastSearchQuery);
         } else {
             results.innerHTML = rows.map(stock => '<div class="search-result" role="option"><button type="button" class="search-result-main" data-workspace-action="research" data-code="' + esc(stock.code) + '" data-name="' + esc(stock.name) + '"><span><b>' + esc(stock.name) + '</b><small>' + esc(stock.code) + ' · ' + esc(stock.industry || '行业暂无') + '</small></span><strong class="' + (Number(stock.pct) >= 0 ? 'pct-up' : 'pct-down') + '">' + (stock.pct == null ? '--' : (Number(stock.pct) >= 0 ? '+' : '') + fmt(stock.pct) + '%') + '</strong></button><button type="button" class="search-watch" data-workspace-action="watch" data-code="' + esc(stock.code) + '" data-name="' + esc(stock.name) + '" aria-label="收藏' + esc(stock.name) + '">☆</button></div>').join('');
         }
@@ -445,32 +590,74 @@
     }
 
     let searchTimer = 0;
+    function runSearch(query) {
+        const results = document.getElementById('globalSearchResults');
+        const input = document.getElementById('globalStockSearch');
+        const requestId = ++searchRequestId;
+        lastSearchQuery = query;
+        results.innerHTML = searchStateMarkup('loading', query);
+        results.hidden = false;
+        input.setAttribute('aria-expanded', 'true');
+        input.setAttribute('aria-busy', 'true');
+        return getJson('/api/stocks/search?q=' + encodeURIComponent(query) + '&limit=12').then(data => {
+            if (requestId !== searchRequestId) return;
+            renderSearchResults(data.results || [], query);
+        }).catch(error => {
+            if (requestId !== searchRequestId) return;
+            results.innerHTML = searchStateMarkup('error', query, error.message);
+            results.hidden = false;
+        }).finally(() => {
+            if (requestId === searchRequestId) input.setAttribute('aria-busy', 'false');
+        });
+    }
+
     function onSearch(event) {
         global.clearTimeout(searchTimer);
         const query = event.target.value.trim();
         const results = document.getElementById('globalSearchResults');
         if (!query) {
+            searchRequestId += 1;
             results.hidden = true;
             event.target.setAttribute('aria-expanded', 'false');
             return;
         }
-        searchTimer = global.setTimeout(() => {
-            getJson('/api/stocks/search?q=' + encodeURIComponent(query) + '&limit=12')
-                .then(data => renderSearchResults(data.results || []))
-                .catch(() => renderSearchResults([]));
-        }, 180);
+        results.innerHTML = searchStateMarkup('loading', query);
+        results.hidden = false;
+        event.target.setAttribute('aria-expanded', 'true');
+        searchTimer = global.setTimeout(() => runSearch(query), 180);
     }
 
     function init() {
         const search = document.getElementById('globalStockSearch');
         if (search) search.addEventListener('input', onSearch);
         document.addEventListener('click', event => {
+            const strategyTag = event.target.closest('[data-strategy-info]');
+            if (strategyTag) {
+                event.preventDefault();
+                event.stopPropagation();
+                openStrategyDefinition(strategyTag.dataset.strategyInfo);
+                return;
+            }
+            if (event.target.closest('[data-search-retry]')) { runSearch(lastSearchQuery); return; }
+            if (event.target.closest('[data-source-retry]')) { openSources(); return; }
+            if (event.target.closest('[data-overview-retry]')) { loadOverview(); return; }
+            if (event.target.closest('[data-alerts-retry]')) { openAlerts(); return; }
+            if (event.target.closest('[data-summary-retry]')) { openDailySummary(); return; }
+            const scoreRetry = event.target.closest('[data-score-retry]');
+            if (scoreRetry) { openScoreInfo(scoreRetry.dataset.code, scoreRetry.dataset.name); return; }
+            if (event.target.closest('[data-copy-summary]')) {
+                const text = event.target.closest('.daily-summary-card').querySelector('pre').textContent;
+                if (global.navigator && global.navigator.clipboard) global.navigator.clipboard.writeText(text);
+                event.target.textContent = '已复制';
+                return;
+            }
             const action = event.target.closest('[data-workspace-action]');
             if (action) {
                 event.preventDefault();
                 event.stopPropagation();
                 const stock = stockFromElement(action);
                 if (action.dataset.workspaceAction === 'watch') updateWatchlist(stock);
+                else if (action.dataset.workspaceAction === 'score-info' && stock) openScoreInfo(stock.code, stock.name);
                 else if (stock) openResearch(stock.code, stock.name);
                 const results = document.getElementById('globalSearchResults');
                 if (results && action.closest('.search-result')) results.hidden = true;
@@ -483,14 +670,24 @@
         document.getElementById('workspaceDrawerBackdrop').addEventListener('click', closeDrawers);
         document.getElementById('alertCenterButton').addEventListener('click', openAlerts);
         document.getElementById('sourceStatusButton').addEventListener('click', openSources);
+        document.getElementById('dailySummaryButton').addEventListener('click', openDailySummary);
+        document.getElementById('methodologyButton').addEventListener('click', openMethodology);
+        document.querySelectorAll('[data-open-methodology]').forEach(button => button.addEventListener('click', openMethodology));
+        document.querySelectorAll('[data-open-summary]').forEach(button => button.addEventListener('click', openDailySummary));
         document.querySelector('[data-tab="watchlist"]').addEventListener('click', renderWatchlist);
-        document.addEventListener('keydown', event => { if (event.key === 'Escape') closeDrawers(); });
+        document.addEventListener('keydown', event => {
+            if (event.key === 'Escape') closeDrawers();
+            if ((event.key === 'Enter' || event.key === ' ') && event.target.matches('[data-strategy-info]')) {
+                event.preventDefault();
+                openStrategyDefinition(event.target.dataset.strategyInfo);
+            }
+        });
         const observer = new MutationObserver(decorateCards);
         const intraday = document.getElementById('intradayContent');
         if (intraday) observer.observe(intraday, { childList: true, subtree: true });
         decorateCards();
         renderWatchlist();
-        fetchAlerts();
+        fetchAlerts().catch(() => {});
         initStrategyComparison();
         loadOverview();
     }
