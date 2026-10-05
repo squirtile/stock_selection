@@ -46,6 +46,8 @@ def _load_stocks_data() -> dict[str, Any]:
     try:
         with open(json_path, "r", encoding="utf-8") as f:
             data = json.load(f)
+        from tools.stock_card_data import enrich_signal_cards
+        enrich_signal_cards(data.get("stocks", []), PROJECT_ROOT, data.get("time", ""))
         backtest_review = data.get("backtestReview", {})
         backtest_path = OUTPUT_DIR / BACKTEST_JSON
         if backtest_path.exists():
@@ -97,6 +99,14 @@ def index():
                 })
             break
 
+    # 网页缠论仅展示买点；兼容仍带卖点标签的旧报表，不改写源文件。
+    for group in data["tabGroups"]:
+        if group.get("key") == "缠论选股":
+            group["children"] = [child for child in group.get("children", [])
+                                 if child.get("subgroup") != "卖点"
+                                 and "卖" not in str(child.get("label", ""))]
+            group["count"] = sum(child.get("count", 0) for child in group["children"])
+
     # 收集所有二级标签（扁平化）
     all_tabs = []
     for g in data["tabGroups"]:
@@ -112,6 +122,13 @@ def index():
     try:
         from backtest.strategy_history_store import load_dashboard
         strategy_dashboard = load_dashboard(PROJECT_ROOT)
+        strategy_dashboard["historyRows"] = [
+            row for row in strategy_dashboard.get("historyRows", [])
+            if row.get("direction") != "看跌" and "卖" not in str(row.get("strategy", ""))
+        ]
+        strategy_dashboard["totalRecords"] = sum(
+            row.get("historyEvaluated", 0) for row in strategy_dashboard["historyRows"]
+        )
         from backtest.intraday_history_store import load_intraday_dashboard
         strategy_dashboard["intraday"] = load_intraday_dashboard(PROJECT_ROOT)
     except Exception:

@@ -1353,6 +1353,10 @@ def build_mini_program_json(
         "stocks": final_stocks,
     }
 
+    # 展示行情独立于原始信号价，避免缠论/背离卡片沿用无日期的旧股票池价格。
+    from tools.stock_card_data import enrich_signal_cards
+    enrich_signal_cards(final_stocks, PROJECT_ROOT, result["time"])
+
     # 原子写入：先写临时文件，再 rename，避免 API 读到半成品
     tmp_path = output_path + ".tmp"
     with open(tmp_path, "w", encoding="utf-8") as f:

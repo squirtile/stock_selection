@@ -138,6 +138,8 @@ def _load_stocks() -> tuple[list[dict[str, Any]], str, str, list[dict], dict | N
             with open(json_path, "r", encoding="utf-8") as f:
                 data = json.load(f)
             stocks = data.get("stocks", [])
+            from tools.stock_card_data import enrich_signal_cards
+            enrich_signal_cards(stocks, PROJECT_ROOT, data.get("time", ""))
             tab_groups = data.get("tabGroups", [])
             market_context = data.get("marketContext", None)
             mtime = os.path.getmtime(str(json_path))

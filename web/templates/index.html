@@ -194,24 +194,26 @@ a{text-decoration:none;color:inherit}
     .strategy-compact-list{grid-template-columns:repeat(3,minmax(0,1fr))}
 }
 </style>
-<link rel="stylesheet" href="{{ url_for('static', filename='workspace.css') }}?v=20261004-qr2">
+<link rel="stylesheet" href="{{ url_for('static', filename='workspace.css') }}?v=20261005-polish1">
 </head>
 <body>
-<nav class="topbar"><div class="topbar-brand"><span class="brand-mark" aria-hidden="true">研</span>策略实验室</div><span class="topbar-caption">市场观察 · 策略研究</span></nav>
+<nav class="topbar"><div class="topbar-brand"><span class="brand-mark" aria-hidden="true">🧪</span>策略实验室</div><span class="topbar-caption">市场观察 · 策略研究</span></nav>
 <div class="container">
-<div class="hero"><h1>🧪 <span>策略</span>实验室</h1><p>个人量化研究记录 · 仅供学习参考</p></div>
-<div class="status-row"><div class="time"><i></i>{% if marketContext and marketContext.tradeDate %}数据日期 {{ marketContext.tradeDate[:4] }}-{{ marketContext.tradeDate[4:6] }}-{{ marketContext.tradeDate[6:8] }}{% else %}{{ time }}{% endif %}</div><div class="right"><span>共 {{ total }} 只</span><a class="refresh" href="/">🔄</a></div></div>
-<div class="update-tip">⏰ 每日 18:30 盘后数据更新，届时请刷新页面查看最新结果</div>
+<header class="workspace-header">
+<div class="hero"><h1><span>策略</span>实验室</h1><p>个人量化研究记录 · 仅供学习参考</p></div>
+<div class="status-row"><div class="time"><i></i><span>{% if marketContext and marketContext.tradeDate %}数据日期 {{ marketContext.tradeDate[:4] }}-{{ marketContext.tradeDate[4:6] }}-{{ marketContext.tradeDate[6:8] }}{% else %}{{ time }}{% endif %}</span><span class="page-refresh-time" id="pageRefreshTime" aria-live="polite">页面刷新 --:--:--</span></div><div class="right"><span>共 {{ total }} 只</span><a class="refresh" href="/" aria-label="刷新页面" title="刷新页面"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 7v5h-5M4 17v-5h5"/><path d="M6.1 7a7 7 0 0 1 11.6-1L20 9M4 15l2.3 3A7 7 0 0 0 17.9 17"/></svg></a></div></div>
+<div class="update-tip site-update">每日 18:30 盘后更新 · 刷新查看最新结果</div>
+</header>
 <div class="main-tabs" id="mainTabs">
-<div class="main-tab" data-tab="strategies"><span class="icon">📊</span>策略扫描</div>
-<div class="main-tab" data-tab="intraday"><span class="icon">⚡</span>盘中实时</div>
-<div class="main-tab" data-tab="backtest"><span class="icon">📈</span>策略复盘</div>
-<div class="main-tab active" data-tab="money"><span class="icon">💰</span>资金动向</div>
-<div class="main-tab" data-tab="sector"><span class="icon">🔥</span>板块热度</div>
-<div class="main-tab" data-tab="ladder"><span class="icon">🚀</span>连板天梯</div>
+<div class="main-tab active" data-tab="strategies"><span class="icon" aria-hidden="true">📊</span>策略扫描</div>
+<div class="main-tab" data-tab="intraday"><span class="icon" aria-hidden="true">⚡</span>盘中实时</div>
+<div class="main-tab" data-tab="backtest"><span class="icon" aria-hidden="true">📈</span>策略复盘</div>
+<div class="main-tab" data-tab="money"><span class="icon" aria-hidden="true">💰</span>资金动向</div>
+<div class="main-tab" data-tab="sector"><span class="icon" aria-hidden="true">🔥</span>板块热度</div>
+<div class="main-tab" data-tab="ladder"><span class="icon" aria-hidden="true">🚀</span>连板天梯</div>
 </div>
-<!-- ===== 资金动向（默认首页） ===== -->
-<div id="panel-money" class="tab-panel">
+<!-- ===== 资金动向 ===== -->
+<div id="panel-money" class="tab-panel" style="display:none">
 <div class="panel-heading"><h2>资金动向</h2><p>观察大盘、行业与概念的资金表现</p></div>
 <div class="money-subtabs" id="moneySubtabs">
 <div class="money-subtab active" data-mtab="market">大盘</div>
@@ -219,12 +221,12 @@ a{text-decoration:none;color:inherit}
 <div class="money-subtab" data-mtab="concept">概念</div>
 </div>
 <div id="moneyContent">
-<div id="moneyFlowInner"><div class="empty"><div class="icon">💰</div><div class="text">加载中…</div></div></div>
+<div id="moneyFlowInner"><div class="empty state-panel state-loading"><div class="icon">💰</div><div class="text">正在加载资金数据…</div><div class="hint">请稍候，正在读取最新结果</div></div></div>
 <div id="indexDivergenceArea"></div>
 </div>
 </div>
 <!-- ===== 策略扫描 ===== -->
-<div id="panel-intraday" class="tab-panel" style="display:none"><div class="panel-heading"><h2>盘中实时</h2><p>跟踪策略信号、当日入选与尾盘观察</p></div><div class="money-subtabs" id="intradaySubtabs"><div class="money-subtab active" data-imode="live">盘中实时</div><div class="money-subtab" data-imode="all">今日全部入选</div><div class="money-subtab" data-imode="tail_today">尾盘选票·今日</div><div class="money-subtab" data-imode="tail_previous">尾盘选票·昨日复盘</div></div><div id="intradayContent"><div class="empty"><div class="icon">⚡</div><div class="text">正在预载最近一次盘中扫描结果…</div></div></div></div>
+<div id="panel-intraday" class="tab-panel" style="display:none"><div class="panel-heading"><h2>盘中实时</h2><p>跟踪策略信号、当日入选与尾盘观察</p></div><div class="money-subtabs" id="intradaySubtabs"><div class="money-subtab active" data-imode="live">盘中实时</div><div class="money-subtab" data-imode="all">今日全部入选</div><div class="money-subtab" data-imode="tail_today">尾盘选票·今日</div><div class="money-subtab" data-imode="tail_previous">尾盘选票·昨日复盘</div></div><div id="intradayContent"><div class="empty state-panel state-loading"><div class="icon">⚡</div><div class="text">正在预载最近一次盘中扫描结果…</div><div class="hint">进入页面后会自动读取后台快照</div></div></div></div>
 <!-- ===== 上一版信号次日复盘 ===== -->
 <div id="panel-backtest" class="tab-panel" style="display:none">
 <div class="panel-heading"><h2>策略复盘</h2><p>回看历史信号与次日表现</p></div>
@@ -246,29 +248,43 @@ a{text-decoration:none;color:inherit}
 {% endif %}
 {% if backtestReview and backtestReview.stocks %}
 <div class="update-tip">选股快照：{{ backtestReview.sourceTime or '--' }} ｜ 复盘时间：{{ backtestReview.reviewTime or '--' }} ｜ 已评价 {{ backtestReview.total or 0 }} 只 ｜ 等待下一交易日 {{ backtestReview.pending or 0 }} 只</div>
-<h3 style="font-size:14px;margin:16px 0 8px">3. 当天股票涨跌明细 <span style="font-size:11px;color:#999;font-weight:400">点击表头排序，默认按当日涨幅从高到低</span></h3>
-<div class="backtest-detail-wrap" style="overflow-x:auto;max-height:620px"><table class="data-table" id="backtestDetailTable"><thead><tr><th class="backtest-sort" data-col="0" data-type="text">状态<span class="sort-arrow">↕</span></th><th class="backtest-sort" data-col="1" data-type="text">股票<span class="sort-arrow">↕</span></th><th class="backtest-sort" data-col="2" data-type="date">选股日<span class="sort-arrow">↕</span></th><th class="backtest-sort" data-col="3" data-type="date">评价日<span class="sort-arrow">↕</span></th><th class="backtest-sort" data-col="4" data-type="number">信号价<span class="sort-arrow">↕</span></th><th class="backtest-sort" data-col="5" data-type="number">收盘价<span class="sort-arrow">↕</span></th><th class="backtest-sort" data-col="6" data-type="number" data-default-sort="desc">当日涨幅<span class="sort-arrow">↕</span></th><th class="backtest-sort" data-col="7" data-type="text">策略<span class="sort-arrow">↕</span></th></tr></thead><tbody>
-{% for s in backtestReview.stocks %}<tr><td data-sort-value="{{ s.status }}">{{ s.status }}</td><td data-sort-value="{{ s.name }}"><b>{{ s.name }}</b><br><span style="font-size:10px;color:#aaa">{{ s.code }}</span></td><td data-sort-value="{{ s.signalDate or '' }}">{{ s.signalDate or '--' }}</td><td data-sort-value="{{ s.tradeDate or '' }}">{{ s.tradeDate or '--' }}</td><td data-sort-value="{{ s.signalPrice if s.signalPrice is not none else '' }}">{{ '%.2f'|format(s.signalPrice) if s.signalPrice is not none else '--' }}</td><td data-sort-value="{{ s.latestClose if s.latestClose is not none else '' }}">{{ '%.2f'|format(s.latestClose) if s.latestClose is not none else '--' }}</td><td data-sort-value="{{ s.todayPct if s.status == '已评价' and s.todayPct is not none else '' }}" class="{% if s.todayPct is not none and s.todayPct >= 0 %}pct-up{% else %}pct-down{% endif %}">{{ '%+.2f'|format(s.todayPct) if s.status == '已评价' and s.todayPct is not none else '--' }}%</td><td data-sort-value="{{ s.strategies|join('、') }}" style="font-size:11px">{{ s.strategies|join('、') }}</td></tr>{% endfor %}
+<h3 class="backtest-detail-heading">3. 当天股票涨跌明细 <span>电脑端点击表头排序，默认按当日涨幅从高到低</span></h3>
+<div class="backtest-detail-wrap"><table class="data-table" id="backtestDetailTable"><thead><tr><th class="backtest-sort" data-col="0" data-type="text">状态<span class="sort-arrow">↕</span></th><th class="backtest-sort" data-col="1" data-type="text">股票<span class="sort-arrow">↕</span></th><th class="backtest-sort" data-col="2" data-type="date">选股日<span class="sort-arrow">↕</span></th><th class="backtest-sort" data-col="3" data-type="date">评价日<span class="sort-arrow">↕</span></th><th class="backtest-sort" data-col="4" data-type="number">信号价<span class="sort-arrow">↕</span></th><th class="backtest-sort" data-col="5" data-type="number">收盘价<span class="sort-arrow">↕</span></th><th class="backtest-sort" data-col="6" data-type="number" data-default-sort="desc">当日涨幅<span class="sort-arrow">↕</span></th><th class="backtest-sort" data-col="7" data-type="text">策略<span class="sort-arrow">↕</span></th></tr></thead><tbody>
+{% for s in backtestReview.stocks %}<tr><td data-label="状态" data-sort-value="{{ s.status }}">{{ s.status }}</td><td data-label="股票" data-sort-value="{{ s.name }}"><b>{{ s.name }}</b><br><span class="backtest-stock-code">{{ s.code }}</span></td><td data-label="选股日" data-sort-value="{{ s.signalDate or '' }}">{{ s.signalDate or '--' }}</td><td data-label="评价日" data-sort-value="{{ s.tradeDate or '' }}">{{ s.tradeDate or '--' }}</td><td data-label="信号价" data-sort-value="{{ s.signalPrice if s.signalPrice is not none else '' }}">{{ '%.2f'|format(s.signalPrice) if s.signalPrice is not none else '--' }}</td><td data-label="收盘价" data-sort-value="{{ s.latestClose if s.latestClose is not none else '' }}">{{ '%.2f'|format(s.latestClose) if s.latestClose is not none else '--' }}</td><td data-label="当日涨幅" data-sort-value="{{ s.todayPct if s.status == '已评价' and s.todayPct is not none else '' }}" class="{% if s.todayPct is not none and s.todayPct >= 0 %}pct-up{% else %}pct-down{% endif %}">{{ '%+.2f'|format(s.todayPct) if s.status == '已评价' and s.todayPct is not none else '--' }}%</td><td data-label="策略" data-sort-value="{{ s.strategies|join('、') }}" class="backtest-strategies">{{ s.strategies|join('、') }}</td></tr>{% endfor %}
 </tbody></table></div>
 {% else %}<div class="empty"><div class="icon">📈</div><div class="text">暂无上一版信号复盘</div><div class="hint">盘后运行 daily_report.py 后生成</div></div>{% endif %}
 </div>
-<div id="panel-strategies" class="tab-panel" style="display:none">
+<div id="panel-strategies" class="tab-panel">
 <div class="panel-heading"><h2>策略扫描</h2><p>按策略查看选股结果，点击股票展开走势图</p></div>
-{% if marketContext %}<span class="market-tag {{ marketContext.trend }}">{{ marketContext.label or '📊 震荡' }} {{ marketContext.tradeDate or '' }}</span>{% endif %}
+<section class="strategy-workbench" aria-label="策略筛选">
+<div class="strategy-workbench-head"><div><span class="section-eyebrow">策略筛选</span><span class="section-note">选择分类和策略，快速缩小结果范围</span></div>{% if marketContext %}<span class="market-tag {{ marketContext.trend }}">{{ marketContext.label or '📊 震荡' }} {{ marketContext.tradeDate or '' }}</span>{% endif %}</div>
 <div class="filter-row" id="level1Tabs">{% for g in tabGroups %}<div class="filter-chip{% if loop.first %} active{% endif %}" data-key="{{ g.key }}">{{ g.label }}<span class="badge">{{ g.count }}</span></div>{% endfor %}</div>
-<!-- 缠论二级子标签（买点/卖点），仅选中缠论选股时显示 -->
+<!-- 缠论仅保留买点入口 -->
 <div id="chanlunSubtabs" class="money-subtabs" style="display:none">
 <div class="money-subtab active" data-ctab="buy">买点</div>
-<div class="money-subtab" data-ctab="sell">卖点</div>
 </div>
-<div class="sub-filter-row" id="level2Tabs">{% for g in tabGroups %}<div class="sub-group" data-parent="{{ g.key }}"{% if not loop.first %} style="display:none"{% endif %}>{% if g.key == '缠论选股' %}{% set buy_chips = g.children|selectattr('subgroup', 'equalto', '买点')|list %}{% set sell_chips = g.children|selectattr('subgroup', 'equalto', '卖点')|list %}<div class="chanlun-chip-group" data-ctab="buy">{% for child in buy_chips %}<div class="sub-chip" data-key="{{ child.key }}" data-parent="{{ g.key }}">{{ child.label }}<span class="badge">{{ child.count }}</span></div>{% endfor %}</div><div class="chanlun-chip-group" data-ctab="sell" style="display:none">{% for child in sell_chips %}<div class="sub-chip" data-key="{{ child.key }}" data-parent="{{ g.key }}">{{ child.label }}<span class="badge">{{ child.count }}</span></div>{% endfor %}</div>{% else %}{% for child in g.children %}<div class="sub-chip" data-key="{{ child.key }}" data-parent="{{ g.key }}">{{ child.label }}<span class="badge">{{ child.count }}</span></div>{% endfor %}{% endif %}</div>{% endfor %}</div>
+<div class="sub-filter-row" id="level2Tabs">{% for g in tabGroups %}<div class="sub-group" data-parent="{{ g.key }}"{% if not loop.first %} style="display:none"{% endif %}>{% if g.key == '缠论选股' %}{% set buy_chips = g.children|selectattr('subgroup', 'equalto', '买点')|list %}<div class="chanlun-chip-group" data-ctab="buy">{% for child in buy_chips %}<div class="sub-chip" data-key="{{ child.key }}" data-parent="{{ g.key }}">{{ child.label }}<span class="badge">{{ child.count }}</span></div>{% endfor %}</div>{% else %}{% for child in g.children %}<div class="sub-chip" data-key="{{ child.key }}" data-parent="{{ g.key }}">{{ child.label }}<span class="badge">{{ child.count }}</span></div>{% endfor %}{% endif %}</div>{% endfor %}</div>
+</section>
+<div class="stock-results-head"><div><span class="stock-results-title">筛选结果</span><span class="stock-results-note">点击股票卡片查看日线走势</span></div><span class="stock-results-meta" id="stockResultsMeta">正在整理结果</span></div>
 <div class="stock-list" id="stockList">
 {% for s in stocks %}
 <div class="stock-card" data-code="{{ s.code }}" data-categories='{{ s.categories|tojson }}' data-strategytypes='{{ s.strategyTypes|tojson }}' data-mlmodels='{{ s.mlModels|tojson }}' data-score="{{ s.score }}" onclick="toggleKline(this)">
 <div class="accent accent-{{ loop.index0 % 4 }}"></div>
 <div class="card-info">
 <div class="card-line1"><span class="name">{{ s.name }}</span><span class="code">{{ s.code }}</span></div>
+{% if s.cardQuote is defined %}
+{% set q = s.cardQuote %}
+<div class="card-line2">
+{% if q.price is not none %}<span class="price">¥{{ '%.2f'|format(q.price) }}</span><span class="tag">收盘</span>{% else %}<span class="tag">价格暂无</span>{% endif %}
+{% if q.pct is not none %}<span class="pct{% if q.pct >= 0 %} pct-up{% else %} pct-down{% endif %}">{{ '%+.2f'|format(q.pct) }}%</span>{% else %}<span class="tag">涨幅暂无</span>{% endif %}
+<span class="tag"{% if q.industryDate %} title="行业资料日期：{{ q.industryDate }}"{% endif %}>{{ q.industry or '行业暂无' }}</span>
+{% if q.marketCap is not none %}<span class="tag">总市值 {{ '%.2f'|format(q.marketCap) }}亿</span>{% else %}<span class="tag" title="暂无与行情同日的市值数据，不使用旧市值代替">市值暂无</span>{% endif %}
+<span class="tag">{{ s.strategyTypes|length }}个信号</span>
+</div>
+<div class="card-quote-date">{% if q.tradeDate %}行情日期 {{ q.tradeDate }} · {{ q.source }}{% else %}暂无带日期的行情，未使用旧参考价{% endif %}</div>
+{% else %}
 <div class="card-line2">{% if s.price %}<span class="price">¥{{ s.price }}</span>{% endif %}{% if s.pct is not none %}<span class="pct{% if s.pct >= 0 %} pct-up{% else %} pct-down{% endif %}">{{ '%+.2f'|format(s.pct) }}%</span>{% endif %}{% if s.industry %}<span class="tag">{{ s.industry }}</span>{% endif %}{% if s.marketCap %}<span class="tag">{{ s.marketCap }}亿</span>{% endif %}{% if s.strategyCount %}<span class="tag">{{ s.strategyCount }}个策略</span>{% endif %}{% if s.sectorLabel %}<span class="tag">{{ s.sectorLabel }}</span>{% endif %}{% if s.bottomVolumeMultiple is defined and s.bottomVolumeMultiple is not none %}<span class="tag">放量 {{ '%.2f'|format(s.bottomVolumeMultiple) }}倍</span><span class="tag">13日量能波动 {{ '%.1f'|format(s.bottomVolumeVariationPct) }}%</span><span class="tag">前期试盘 {{ s.bottomFailedProbeCount }}次</span>{% endif %}</div>
+{% endif %}
 <div class="card-line3">{% for st in s.strategyTypes %}<span class="s-tag">{{ st.group }}·{{ st.name }}</span>{% endfor %}{% for ml in s.mlModels %}<span class="m-tag">🤖 {{ ml.displayName }}</span>{% endfor %}</div>
 <div class="card-hint">💡 点击展开最近30日K线图</div>
 </div>
@@ -279,9 +295,9 @@ a{text-decoration:none;color:inherit}
 </div>
 </div>
 <!-- ===== 连板天梯 ===== -->
-<div id="panel-ladder" class="tab-panel" style="display:none"><div class="panel-heading"><h2>连板天梯</h2><p>查看连板层级与市场强势股</p></div><div id="ladderContent"><div class="empty"><div class="icon">🚀</div><div class="text">加载中…</div></div></div></div>
+<div id="panel-ladder" class="tab-panel" style="display:none"><div class="panel-heading"><h2>连板天梯</h2><p>查看连板层级与市场强势股</p></div><div id="ladderContent"><div class="empty state-panel state-loading"><div class="icon">🚀</div><div class="text">正在加载连板数据…</div><div class="hint">请稍候，正在读取最近交易日结果</div></div></div></div>
 <!-- ===== 板块热度 ===== -->
-<div id="panel-sector" class="tab-panel" style="display:none"><div class="panel-heading"><h2>板块热度</h2><p>浏览行业与概念的活跃表现</p></div><div id="sectorContent"><div class="empty"><div class="icon">🔥</div><div class="text">加载中…</div></div></div></div>
+<div id="panel-sector" class="tab-panel" style="display:none"><div class="panel-heading"><h2>板块热度</h2><p>浏览行业与概念的活跃表现</p></div><div id="sectorContent"><div class="empty state-panel state-loading"><div class="icon">🔥</div><div class="text">正在加载板块数据…</div><div class="hint">请稍候，正在读取最近交易日结果</div></div></div></div>
 <section class="support-card" aria-label="支持项目">
 <h2>☕ 支持这个小项目</h2>
 <p>如果这些研究内容对你有一点帮助，欢迎请作者喝杯咖啡。感谢每一份支持，让这个小工具能继续维护和迭代。</p>
@@ -290,6 +306,8 @@ a{text-decoration:none;color:inherit}
 <div class="footer">以上内容仅供个人研究参考，不构成投资建议<br><a href="https://beian.miit.gov.cn/" target="_blank" rel="noopener noreferrer" style="color:#ccc;">湘ICP备2026029124号-1</a><span style="margin:0 8px;color:#ddd;">｜</span><a href="https://beian.mps.gov.cn/#/query/webSearch?code=44030002016802" target="_blank" rel="noopener noreferrer" style="color:#ccc;">粤公网安备44030002016802号</a></div>
 </div>
 <script>
+const pageRefreshTime=document.getElementById('pageRefreshTime');
+if(pageRefreshTime){const loadedAt=new Date();const two=value=>String(value).padStart(2,'0');pageRefreshTime.textContent='页面刷新 '+two(loadedAt.getHours())+':'+two(loadedAt.getMinutes())+':'+two(loadedAt.getSeconds())}
 // === 资金动向 ===
 function renderIndexDivergence(){
   const area=document.getElementById('indexDivergenceArea');
@@ -331,7 +349,7 @@ document.getElementById('indexDivergenceArea').style.display=this.dataset.mtab==
 window._moneySort='net';window._moneySortDir='desc'; // 默认按资金净额从高到低
 
 // === 资金动向渲染 ===
-function loadMoney(){fetch('/api/moneyflow').then(r=>r.json()).then(data=>{window._moneyData=data;if(!data.success){document.getElementById('moneyFlowInner').innerHTML='<div class=\"empty\"><div class=\"icon\">💰</div><div class=\"text\">暂无数据</div></div>';return}renderMoneyView('market');renderIndexDivergence()}).catch(()=>{document.getElementById('moneyFlowInner').innerHTML='<div class=\"empty\"><div class=\"icon\">⚠️</div><div class=\"text\">加载失败</div></div>'})}
+function loadMoney(){fetch('/api/moneyflow').then(r=>r.json()).then(data=>{window._moneyData=data;if(!data.success){document.getElementById('moneyFlowInner').innerHTML='<div class=\"empty state-panel\"><div class=\"icon\">💰</div><div class=\"text\">暂无资金数据</div><div class=\"hint\">最近交易日尚未生成可展示的资金结果</div></div>';return}renderMoneyView('market');renderIndexDivergence()}).catch(()=>{document.getElementById('moneyFlowInner').innerHTML='<div class=\"empty state-panel state-error\"><div class=\"icon\">⚠️</div><div class=\"text\">资金数据加载失败</div><div class=\"hint\">接口暂时不可用，请稍后重试</div><button type=\"button\" class=\"state-action\" onclick=\"loadMoney()\">重新加载</button></div>'})}
 function renderMoneyView(tab){
   const data=window._moneyData;
   const c=document.getElementById('moneyFlowInner');
@@ -519,7 +537,7 @@ function loadIntraday(mode='live'){
   // 静默刷新时保留现有结果，避免每60秒整页闪成空白等待状态。
   const loadedKey='_intradayLoaded_'+mode;
   const modeChanged=window._intradayRenderedMode&&window._intradayRenderedMode!==mode;
-  if(modeChanged||(!window[loadedKey]&&!window.__intradayFallbackRendered))c.innerHTML='<div class="empty"><div class="icon">⚡</div><div class="text">正在读取'+(mode.indexOf('tail')===0?'尾盘选票':mode==='all'?'今日全部入选':'盘中实时')+'结果…</div></div>';
+  if(modeChanged||(!window[loadedKey]&&!window.__intradayFallbackRendered))c.innerHTML='<div class="empty state-panel state-loading"><div class="icon">⚡</div><div class="text">正在读取'+(mode.indexOf('tail')===0?'尾盘选票':mode==='all'?'今日全部入选':'盘中实时')+'结果…</div><div class="hint">请稍候，页面会自动读取后台最新快照</div></div>';
   const requestLimit=mode==='live'?20:(mode==='all'?1000:50);
   const initial=(mode==='live'&&!window.__intradayInitialUsed&&window.__intradayInitial&&window.__intradayInitial.success)?Promise.resolve(window.__intradayInitial):(fetch('/api/intraday?mode='+mode+'&limit='+requestLimit+'&_='+Date.now(),{cache:'no-store',signal:controller.signal}).then(r=>r.json()));
   if(mode==='live'&&!window.__intradayInitialUsed&&window.__intradayInitial&&window.__intradayInitial.success)window.__intradayInitialUsed=true;
@@ -528,7 +546,6 @@ function loadIntraday(mode='live'){
     if(!d.success){c.innerHTML='<div class="empty"><div class="icon">⚠️</div><div class="text">'+esc(d.error||'行情获取失败')+'</div></div>';return}
     if(mode.indexOf('tail')===0){renderTailIntraday(d,c);window[loadedKey]=true;window._intradayRenderedMode=mode;return}
     if(mode==='all'){renderAllIntraday(d,c);window[loadedKey]=true;window._intradayRenderedMode=mode;return}
-    const hr=d.historicalSectorResearch||{},hl=hr.currentLiveOverlay||{};
     let h='<div class="update-tip">盘中实时行情 · '+esc(d.time||'')+' · 每60秒更新</div>';
     if(Number(d.matched||0)===0){
       const reasons=(d.noCandidateReasons||[]).map(reason=>'<li>'+esc(reason)+'</li>').join('')||'<li>本轮没有满足全部条件的正式候选。</li>';
@@ -541,15 +558,6 @@ function loadIntraday(mode='live'){
     }
     const sectorTags=(d.topIndustries||[]).slice(0,6).map(s=>'<span class="tag" style="margin:2px 5px 2px 0">'+esc(s.name)+' <b style="color:'+color(s.pct)+'">'+(Number(s.pct)>=0?'+':'')+fmt(s.pct)+'%</b> · 上涨'+fmt(s.breadth,0)+'% · 资金'+(Number(s.mainNetRatio)>=0?'+':'')+fmt(s.mainNetRatio,1)+'%</span>').join('');
     if(sectorTags)h+='<div style="margin:10px 0;font-size:12px"><b>实时强势行业：</b>'+sectorTags+'</div>';
-    let intradayHistoryHtml='';
-    if(hr.validation&&hl.validation){
-      const bt=hr.train.individualStock||{},bv=hr.validation.individualStock||{},ot=hl.train||{},ov=hl.validation||{};
-      intradayHistoryHtml='<div class="update-tip" style="margin-top:10px">以下为历史回测统计，不代表本轮实时命中</div>'
-        +'<div style="overflow-x:auto;margin:10px 0"><table class="data-table"><thead><tr><th>10:30历史推演</th><th>训练段</th><th>验证段</th><th>结论</th></tr></thead><tbody>'
-        +'<tr><td>只看个股形态</td><td>'+Number(bt.selected||0)+'只/'+Number(bt.hits||0)+'中，'+fmt(bt.precision)+'%</td><td>'+Number(bv.selected||0)+'只/'+Number(bv.hits||0)+'中，'+fmt(bv.precision)+'%</td><td>旧版实验基准</td></tr>'
-        +'<tr><td>叠加板块硬过滤</td><td>'+Number(ot.selected||0)+'只/'+Number(ot.hits||0)+'中，'+fmt(ot.precision)+'%</td><td>'+Number(ov.selected||0)+'只/'+Number(ov.hits||0)+'中，'+fmt(ov.precision)+'%</td><td style="color:#d97706">验证未改善，仅评分不拦截</td></tr>'
-        +'</tbody></table></div>';
-    }
     h+='<div class="stock-list">';
     (d.stocks||[]).forEach((s,index)=>{
       const sec=s.sector||{},flow=Number(sec.mainNetRatio||0),sp=Number(sec.pct||0);
@@ -571,7 +579,7 @@ function loadIntraday(mode='live'){
     if(!(d.stocks||[]).length){
       h+='<div class="empty"><div class="icon">📭</div><div class="text">本轮没有正式候选</div></div>';
     }
-    h+='</div>'+intradayHistoryHtml+'<div class="update-tip" style="margin-top:10px">页面每60秒自动读取后台最新结果。快照：'+esc(d.snapshot||d.snapshotError||'未保存')+'</div>';
+    h+='</div><div class="update-tip" style="margin-top:10px">页面每60秒自动读取后台最新结果。快照：'+esc(d.snapshot||d.snapshotError||'未保存')+'</div>';
     c.innerHTML=h;
     window[loadedKey]=true;
     window._intradayRenderedMode=mode;
@@ -579,7 +587,7 @@ function loadIntraday(mode='live'){
     if(err&&err.name==='AbortError')return;
     if(requestId!==window._intradayRequestId||mode!==window._intradayActiveMode)return;
     console.error('盘中实时渲染失败',err);
-    if(!window[loadedKey]&&!window.__intradayFallbackRendered)c.innerHTML='<div class="empty"><div class="icon">⚠️</div><div class="text">暂时无法读取结果，正在自动重试…</div></div>';
+    if(!window[loadedKey]&&!window.__intradayFallbackRendered)c.innerHTML='<div class="empty state-panel state-error"><div class="icon">⚠️</div><div class="text">暂时无法读取盘中结果</div><div class="hint">系统仍会自动重试，也可以立即重新加载</div><button type="button" class="state-action" onclick="loadIntraday(\''+mode+'\')">重新加载</button></div>';
     clearTimeout(window['_intradayRetry_'+mode]);
     window['_intradayRetry_'+mode]=setTimeout(()=>{if(window._intradayActiveMode===mode)loadIntraday(mode)},3000);
   })
@@ -690,18 +698,19 @@ this.classList.add('active');
 filterStocks(this.dataset.parent,this.dataset.key)
 })});
 
-function filterStocks(l1,l2){const TOP=10;const cards=document.querySelectorAll('#stockList .stock-card');let vis=[];cards.forEach(card=>{const cats=JSON.parse(card.dataset.categories||'[]'),sts=JSON.parse(card.dataset.strategytypes||'[]'),mls=JSON.parse(card.dataset.mlmodels||'[]');let s=false;if(l1==='策略信号'){if(cats.includes('策略信号'))s=l2?sts.some(t=>t.groupKey===l2||t.name===l2):true}else if(l1==='ML模型信号'){if(cats.includes('ML模型信号'))s=l2?mls.some(m=>m.key===l2):true}else if(l2){const chip=document.querySelector('#level2Tabs .sub-chip[data-key="'+l2+'"]');const raw=chip?chip.textContent:'',label=raw.replace(/\d+$/,'').replace(/[·\s]/g,'').trim();s=cats.includes(l1)&&sts.some(t=>t.name.replace(/[·\s]/g,'')===label)}else{s=cats.includes(l1)}if(s)vis.push({card,score:parseInt(card.dataset.score)||0})});if(l2){vis.sort((a,b)=>b.score-a.score);vis=vis.slice(0,TOP)}cards.forEach(c=>c.style.display='none');vis.forEach(v=>v.card.style.display='')}
+function filterStocks(l1,l2){const TOP=10;const cards=document.querySelectorAll('#stockList .stock-card');let vis=[];cards.forEach(card=>{const cats=JSON.parse(card.dataset.categories||'[]'),sts=JSON.parse(card.dataset.strategytypes||'[]'),mls=JSON.parse(card.dataset.mlmodels||'[]');let s=false;if(l1==='策略信号'){if(cats.includes('策略信号'))s=l2?sts.some(t=>t.groupKey===l2||t.name===l2):true}else if(l1==='ML模型信号'){if(cats.includes('ML模型信号'))s=l2?mls.some(m=>m.key===l2):true}else if(l2){const chip=document.querySelector('#level2Tabs .sub-chip[data-key="'+l2+'"]');const raw=chip?chip.textContent:'',label=raw.replace(/\d+$/,'').replace(/[·\s]/g,'').trim();s=cats.includes(l1)&&sts.some(t=>t.name.replace(/[·\s]/g,'')===label)}else{s=cats.includes(l1)}if(s)vis.push({card,score:parseInt(card.dataset.score)||0})});const matched=vis.length;if(l2){vis.sort((a,b)=>b.score-a.score);vis=vis.slice(0,TOP)}cards.forEach(c=>c.style.display='none');vis.forEach(v=>v.card.style.display='');const meta=document.getElementById('stockResultsMeta');if(meta)meta.textContent=matched>vis.length?'共 '+matched+' 只 · 展示评分前 '+vis.length+' 只':'共 '+vis.length+' 只'}
 
 // === 日线/资金走势（插入到卡片外部，跨整行全宽）===
 function toggleKline(card){
   const code=card.dataset.code;
   let area=document.querySelector('.kline-area[data-code="'+code+'"]');
-  if(area){area.remove();return}
+  if(area){area.remove();card.classList.remove('is-expanded');return}
+  card.classList.add('is-expanded');
   area=document.createElement('div');area.className='kline-area';area.dataset.code=code;
   area.style.cssText='margin:0 0 8px 0;padding:12px 14px;background:#fafbfc;border-radius:10px;border:1px solid #e0e0e0';
   const hdr=document.createElement('div');hdr.style.cssText='display:flex;align-items:center;margin-bottom:4px;font-size:12px;color:#666';
   const codeLabel=document.createElement('span');codeLabel.style.cssText='font-weight:700;color:#1a1a2e';codeLabel.textContent=code;
-  const close=document.createElement('button');close.type='button';close.style.cssText='border:0;background:transparent;font-size:11px;color:#94a3b8;cursor:pointer;margin-left:auto';close.textContent='✕ 收起';close.addEventListener('click',()=>area.remove());
+  const close=document.createElement('button');close.type='button';close.style.cssText='border:0;background:transparent;font-size:11px;color:#94a3b8;cursor:pointer;margin-left:auto';close.textContent='✕ 收起';close.addEventListener('click',()=>{area.remove();card.classList.remove('is-expanded')});
   hdr.append(codeLabel,close);area.appendChild(hdr);
 
   const tabs=document.createElement('div');tabs.className='chart-tabs';
@@ -835,12 +844,12 @@ function drawKline(code,klines,imgEl){
 }
 
 // === 连板天梯 ===
-function loadLadder(){fetch('/api/ladder').then(r=>r.json()).then(data=>{const c=document.getElementById('ladderContent');if(!data.success||!data.dates||!data.dates.length){c.innerHTML='<div class="empty"><div class="icon">🚀</div><div class="text">暂无连板数据</div></div>';return}let ad=null,ad2=null;for(const d of data.dates){const ld=data.data[d];if(ld&&ld.ladder&&ld.ladder.length){ad=d;ad2=ld;break}}if(!ad2){c.innerHTML='<div class="empty"><div class="icon">🪜</div><div class="text">暂无连板数据</div><div class="hint">盘前尚未生成，请收盘后查看</div></div>';return}window._ldata=data;window._ldate=ad;renderLadder(ad,ad2)}).catch(()=>{document.getElementById('ladderContent').innerHTML='<div class="empty"><div class="icon">⚠️</div><div class="text">加载失败</div></div>'})}
+function loadLadder(){fetch('/api/ladder').then(r=>r.json()).then(data=>{const c=document.getElementById('ladderContent');if(!data.success||!data.dates||!data.dates.length){c.innerHTML='<div class="empty state-panel"><div class="icon">🚀</div><div class="text">暂无连板数据</div><div class="hint">最近交易日尚未生成连板结果</div></div>';return}let ad=null,ad2=null;for(const d of data.dates){const ld=data.data[d];if(ld&&ld.ladder&&ld.ladder.length){ad=d;ad2=ld;break}}if(!ad2){c.innerHTML='<div class="empty state-panel"><div class="icon">🪜</div><div class="text">暂无连板数据</div><div class="hint">盘前尚未生成，请收盘后查看</div></div>';return}window._ldata=data;window._ldate=ad;renderLadder(ad,ad2)}).catch(()=>{document.getElementById('ladderContent').innerHTML='<div class="empty state-panel state-error"><div class="icon">⚠️</div><div class="text">连板数据加载失败</div><div class="hint">接口暂时不可用，请稍后重试</div><button type="button" class="state-action" onclick="loadLadder()">重新加载</button></div>'})}
 function renderLadder(date,ld){const data=window._ldata,c=document.getElementById('ladderContent');let h='<div class="date-pills"><span class="label">日期</span>';data.dates.forEach(d=>{const has=data.data[d]&&data.data[d].ladder&&data.data[d].ladder.length;h+='<span class="date-pill'+(d===date?' active':'')+'" onclick="switchLadder(\''+d+'\')">'+d+(has?' · '+data.data[d].total+'只':'')+'</span>'});const bgMap={1:'#fef5e7',2:'#d0e4f5',3:'#c8ecdf',4:'#ffe9a0',5:'#ffe0c0',6:'#ffd4b0',7:'#ffc8c8',8:'#ffb8b8',9:'#e8c8f5',10:'#d0d4d8',11:'#d0d4d8',12:'#d0d4d8'};const fcMap={1:'#6b5030',2:'#155a85',3:'#145e4f',4:'#7a6400',5:'#c04a00',6:'#b54008',7:'#a93226',8:'#8b1611',9:'#6b2f82',10:'#0f1923',11:'#0f1923',12:'#0f1923'};h+='</div><table class="data-table"><thead><tr><th>连板</th><th>股票</th><th>代码</th></tr></thead><tbody>';ld.ladder.forEach(item=>{const lv=item.nums>12?12:item.nums;const bg=bgMap[lv]||'#fff',fc=fcMap[lv]||'#222';(item.stocks||[]).forEach((s,i)=>{h+='<tr style="background:'+bg+(i===0?';border-top:2px solid #d0d0d0':'')+'">';if(i===0)h+='<td rowspan="'+item.stocks.length+'" style="vertical-align:middle;text-align:center"><span class="board-badge board-lv'+lv+'">'+item.nums+'</span><div style="font-size:12px;color:#888;margin-top:3px;font-weight:600">'+item.stocks.length+'只</div></td>';h+='<td style="color:'+fc+';font-weight:600;font-size:15px">'+s.name+'</td><td style="font-size:15px;color:'+fc+';font-weight:600">'+(s.ts_code||'').replace('.SH','').replace('.SZ','')+'</td></tr>'})});h+='</tbody></table>';c.innerHTML=h}
 function switchLadder(d){const data=window._ldata;if(!data)return;const ld=data.data[d];if(ld&&ld.ladder&&ld.ladder.length){window._ldate=d;renderLadder(d,ld)}}
 
 // === 板块热度 ===
-function loadSector(){fetch('/api/sector_heat').then(r=>r.json()).then(data=>{const c=document.getElementById('sectorContent');if(!data.success||!data.dates||!data.dates.length){c.innerHTML='<div class="empty"><div class="icon">🔥</div><div class="text">暂无板块数据</div></div>';return}let ad=null,secs=[];for(const d of data.dates){const sx=(data.data[d]&&data.data[d].sectors)||[];if(sx.length){ad=d;secs=sx;break}}if(!secs.length){c.innerHTML='<div class="empty"><div class="icon">🔥</div><div class="text">暂无板块数据</div><div class="hint">盘前尚未生成，请收盘后查看</div></div>';return}window._sdata=data;window._sdate=ad;renderSector(ad,secs)}).catch(()=>{document.getElementById('sectorContent').innerHTML='<div class="empty"><div class="icon">⚠️</div><div class="text">加载失败</div></div>'})}
+function loadSector(){fetch('/api/sector_heat').then(r=>r.json()).then(data=>{const c=document.getElementById('sectorContent');if(!data.success||!data.dates||!data.dates.length){c.innerHTML='<div class="empty state-panel"><div class="icon">🔥</div><div class="text">暂无板块数据</div><div class="hint">最近交易日尚未生成板块结果</div></div>';return}let ad=null,secs=[];for(const d of data.dates){const sx=(data.data[d]&&data.data[d].sectors)||[];if(sx.length){ad=d;secs=sx;break}}if(!secs.length){c.innerHTML='<div class="empty state-panel"><div class="icon">🔥</div><div class="text">暂无板块数据</div><div class="hint">盘前尚未生成，请收盘后查看</div></div>';return}window._sdata=data;window._sdate=ad;renderSector(ad,secs)}).catch(()=>{document.getElementById('sectorContent').innerHTML='<div class="empty state-panel state-error"><div class="icon">⚠️</div><div class="text">板块数据加载失败</div><div class="hint">接口暂时不可用，请稍后重试</div><button type="button" class="state-action" onclick="loadSector()">重新加载</button></div>'})}
 function renderSector(date,secs){const data=window._sdata,c=document.getElementById('sectorContent');let h='<div class="date-pills"><span class="label">日期</span>';data.dates.forEach(d=>{const sx=(data.data[d]&&data.data[d].sectors)||[];if(!sx.length)return;h+='<span class="date-pill'+(d===date?' active':'')+'" onclick="switchSector(\''+d+'\')">'+d+' · '+sx.length+'个</span>'});h+='</div><div class="sector-grid">';[...secs].sort((a,b)=>(b.up_nums||0)-(a.up_nums||0)).forEach((s,si)=>{const hc=(s.up_nums||0)>=5?'heat-hot':(s.up_nums||0)>=2?'heat-warm':'heat-cool';h+='<div class="sector-item" onclick="toggleSectorStocks(\''+date+'\',this)" style="cursor:pointer"><span class="sname">'+s.name+'</span><div class="sinfo"><span>🔥涨停 '+s.up_nums+'</span><span>📈 '+s.up_stat+'</span><span>持续 '+s.days+'天</span><span class="heat-badge '+hc+'">'+(s.pct_chg!=null?(s.pct_chg>=0?'+':'')+s.pct_chg.toFixed(2)+'%':'')+'</span></div><div style="font-size:10px;color:#bbb;margin-top:2px">💡 点击查看涨停股明细</div></div>'});h+='</div>';c.innerHTML=h}
 function switchSector(d){const data=window._sdata;if(!data)return;const secs=(data.data[d]&&data.data[d].sectors)||[];if(secs.length){window._sdate=d;renderSector(d,secs)}}
 function toggleSectorStocks(date,el){let existing=document.querySelector('.sector-stocks-area');if(existing){if(existing.previousElementSibling===el){existing.remove();return}else{existing.remove()}}area=document.createElement('div');area.className='sector-stocks-area';area.style.cssText='margin:0 0 6px 0;padding:8px 10px;background:#fafbfc;border-radius:8px;border:1px solid #e0e0e0;max-height:360px;overflow-y:auto';const data=window._sdata;const name=el.querySelector('.sname').textContent;const sectors=(data.data[date]&&data.data[date].sectors)||[];const sec=sectors.find(s=>s.name===name);const stocks=(sec&&sec.limit_stocks)||[];let hdr='<div style="display:flex;align-items:center;margin-bottom:6px;font-size:12px;color:#666"><b style="color:#1a1a2e">'+name+'</b> 涨停股明细 <span style="font-size:10px;color:#aaa;margin-left:auto;cursor:pointer" onclick="this.closest(\'.sector-stocks-area\').remove()">✕ 收起</span></div>';if(!stocks.length){hdr+='<div style="font-size:11px;color:#aaa;text-align:center;padding:10px">该板块暂无涨停股数据（运行 sector_heat.py --json 获取成分股）</div>'}else{let t='<table style="width:100%;font-size:11px;border-collapse:collapse"><thead><tr style="color:#888"><th style="text-align:left;padding:4px 6px">股票</th><th style="text-align:left;padding:4px 6px">行业</th><th style="text-align:right;padding:4px 6px">涨幅</th><th style="text-align:right;padding:4px 6px">连板</th><th style="text-align:right;padding:4px 6px">市值(亿)</th></tr></thead><tbody>';stocks.forEach(s=>{t+='<tr style="border-top:1px solid #f0f0f0"><td style="padding:5px 6px"><b style="color:#1a1a2e">'+s.name+'</b><span style="color:#bbb;font-size:10px;margin-left:4px">'+(s.ts_code||'').replace('.SH','').replace('.SZ','')+'</span></td><td style="padding:5px 6px;color:#666">'+(s.industry||'')+'</td><td style="padding:5px 6px;text-align:right;color:#ef4444;font-weight:600">+'+s.pct_chg+'%</td><td style="padding:5px 6px;text-align:right;font-weight:600;color:'+(s.limit_times>=3?'#ef4444':'#666')+'">'+(s.limit_times||0)+'板</td><td style="padding:5px 6px;text-align:right;color:#888">'+(s.float_mv||'')+'</td></tr>'});t+='</tbody></table>';hdr+=t}area.innerHTML=hdr;el.after(area)}
