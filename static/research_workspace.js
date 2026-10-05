@@ -51,7 +51,45 @@
         return { all, unread: all.filter(alert => !read.has(String(alert.id))) };
     }
 
-    const api = { loadStoredArray, toggleWatchlist, uniqueAlerts };
+    function selectStrategyKeys(selected, key, maxSelected) {
+        const current = Array.isArray(selected) ? selected.map(String) : [];
+        const value = String(key || '');
+        const index = current.indexOf(value);
+        if (index >= 0) return current.filter(item => item !== value);
+        if (!value || current.length >= Math.max(1, Number(maxSelected) || 4)) return current;
+        return current.concat(value);
+    }
+
+    function buildStrategyComparison(rows, selected) {
+        const wanted = new Set((Array.isArray(selected) ? selected : []).map(String));
+        return (Array.isArray(rows) ? rows : []).filter(row => wanted.has(String(row.strategy))).map(row => ({
+            strategy: String(row.strategy || ''),
+            winRate: row.historyWinRate == null ? null : Number(row.historyWinRate),
+            avgPct: row.historyAvgPct == null ? null : Number(row.historyAvgPct),
+            sample: Number(row.historyEvaluated || 0),
+            reviewDays: Number(row.reviewDays || 0)
+        }));
+    }
+
+    function marketOverviewModel(payload) {
+        const data = payload || {};
+        const breadth = data.breadth || {};
+        const totalSources = Number(data.totalSources || 0);
+        const healthySources = Number(data.healthySources || 0);
+        const hasBreadth = breadth.status !== 'missing' && breadth.status !== 'error' && Number(breadth.total || 0) > 0;
+        return {
+            state: data.degraded || !hasBreadth ? 'degraded' : 'ok',
+            sourceText: healthySources + '/' + totalSources + ' 数据源可用',
+            breadthText: hasBreadth ? '上涨 ' + Number(breadth.advances || 0) + ' / 下跌 ' + Number(breadth.declines || 0) : '市场宽度暂无',
+            limitText: hasBreadth ? '涨停 ' + Number(breadth.limitUp || 0) + ' / 跌停 ' + Number(breadth.limitDown || 0) : '涨停强度暂无',
+            medianText: breadth.medianPct == null ? '中位涨幅 --' : '中位涨幅 ' + (Number(breadth.medianPct) >= 0 ? '+' : '') + Number(breadth.medianPct).toFixed(2) + '%',
+            temperature: hasBreadth ? String(breadth.temperature || '暂无') : '暂无',
+            stale: Boolean(breadth.stale),
+            tradeDate: String(breadth.tradeDate || '')
+        };
+    }
+
+    const api = { loadStoredArray, toggleWatchlist, uniqueAlerts, selectStrategyKeys, buildStrategyComparison, marketOverviewModel };
     if (typeof module !== 'undefined' && module.exports) module.exports = api;
     global.ResearchWorkspace = api;
 
@@ -75,6 +113,8 @@
     let watchlist = loadStoredArray(storage, WATCH_KEY).map(normalizeStock).filter(Boolean);
     let readAlertIds = loadStoredArray(storage, READ_KEY).map(String);
     let currentAlerts = [];
+    let overviewCache = null;
+    let selectedStrategies = [];
 
     const esc = value => String(value == null ? '' : value)
         .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
@@ -308,15 +348,78 @@
         const body = document.getElementById('utilityDrawerBody');
         title.textContent = '数据源状态';
         subtitle.textContent = data.degraded ? '部分数据已降级，其他模块仍可使用' : '全部展示数据源可用';
-        body.innerHTML = '<div class="source-list">' + Object.values(data.sources || {}).map(source => '<article class="source-item source-' + esc(source.status) + '"><span class="source-status-dot"></span><div><b>' + esc(source.label) + '</b><p>' + esc(source.message) + '</p><time>' + esc(source.dataTime || '暂无更新时间') + ' · ' + esc(source.file) + '</time></div><strong>' + esc(source.status) + '</strong></article>').join('') + '</div>';
+        const statusNames = { ok: '正常', stale: '过期', future: '时间异常', missing: '缺失', error: '错误' };
+        body.innerHTML = '<div class="source-list">' + Object.values(data.sources || {}).map(source => '<article class="source-item source-' + esc(source.status) + '"><span class="source-status-dot"></span><div><b>' + esc(source.label) + '</b><p>' + esc(source.message) + '</p><time>' + esc(source.dataTime || '暂无更新时间') + ' · ' + esc(source.file) + '</time></div><strong>' + esc(statusNames[source.status] || source.status) + '</strong></article>').join('') + '</div>';
     }
 
     function openSources() {
         openDrawer('workspaceUtilityDrawer');
         document.getElementById('utilityDrawerTitle').textContent = '数据源状态';
         document.getElementById('utilityDrawerBody').innerHTML = '<div class="empty state-panel state-loading"><div class="icon">◉</div><div class="text">正在检查数据源…</div></div>';
-        getJson('/api/workspace/overview').then(renderSources).catch(error => {
+        (overviewCache ? Promise.resolve(overviewCache) : getJson('/api/workspace/overview')).then(renderSources).catch(error => {
             document.getElementById('utilityDrawerBody').innerHTML = '<div class="empty state-panel state-error"><div class="icon">⚠️</div><div class="text">状态检查失败</div><div class="hint">' + esc(error.message) + '</div></div>';
+        });
+    }
+
+    function renderMarketOverview(data) {
+        overviewCache = data;
+        const container = document.getElementById('marketOverview');
+        if (!container) return;
+        const model = marketOverviewModel(data);
+        container.className = 'market-overview market-overview-' + model.state;
+        container.innerHTML = '<div class="market-pulse-title"><span class="pulse-dot"></span><b>市场温度 ' + esc(model.temperature) + '</b><small>' + esc(model.tradeDate || '日期暂无') + (model.stale ? ' · 历史快照' : '') + '</small></div>' +
+            '<div class="market-pulse-metrics"><span>' + esc(model.breadthText) + '</span><span>' + esc(model.limitText) + '</span><span>' + esc(model.medianText) + '</span><button type="button" id="overviewSourceButton">' + esc(model.sourceText) + '</button></div>';
+        const button = document.getElementById('overviewSourceButton');
+        if (button) button.addEventListener('click', openSources);
+    }
+
+    function loadOverview() {
+        return getJson('/api/workspace/overview').then(renderMarketOverview).catch(() => {
+            const container = document.getElementById('marketOverview');
+            if (container) {
+                container.className = 'market-overview market-overview-degraded';
+                container.innerHTML = '<span class="pulse-dot"></span><b>市场概览暂时不可用</b><span>不影响策略扫描与盘中结果</span>';
+            }
+        });
+    }
+
+    function renderStrategyComparison() {
+        const rows = Array.isArray(embedded.strategies) ? embedded.strategies : [];
+        const choices = document.getElementById('strategyCompareChoices');
+        const result = document.getElementById('strategyCompareResult');
+        if (!choices || !result) return;
+        if (!rows.length) {
+            choices.innerHTML = '';
+            result.innerHTML = '<div class="research-note">暂无可比较的历史策略数据</div>';
+            return;
+        }
+        const atLimit = selectedStrategies.length >= 4;
+        choices.innerHTML = rows.map(row => {
+            const key = String(row.strategy || '');
+            const checked = selectedStrategies.includes(key);
+            return '<label class="strategy-choice' + (checked ? ' is-selected' : '') + '"><input type="checkbox" value="' + esc(key) + '"' + (checked ? ' checked' : '') + (!checked && atLimit ? ' disabled' : '') + '><span>' + esc(key) + '</span><small>' + fmt(row.historyWinRate) + '%</small></label>';
+        }).join('');
+        const compared = buildStrategyComparison(rows, selectedStrategies);
+        if (compared.length < 2) {
+            result.innerHTML = '<div class="strategy-compare-empty">再选择 ' + (2 - compared.length) + ' 个策略即可开始比较</div>';
+            return;
+        }
+        result.innerHTML = '<div class="strategy-comparison-grid">' + compared.map(item => {
+            const win = item.winRate == null ? 0 : Math.max(0, Math.min(100, item.winRate));
+            return '<article class="strategy-comparison-card"><div class="comparison-name">' + esc(item.strategy) + '</div><div class="comparison-win"><b class="' + (win >= 50 ? 'pct-up' : 'pct-down') + '">' + fmt(item.winRate) + '%</b><span>历史胜率</span></div><div class="comparison-bar"><i style="width:' + win + '%"></i></div><dl><div><dt>平均涨幅</dt><dd class="' + (Number(item.avgPct) >= 0 ? 'pct-up' : 'pct-down') + '">' + (Number(item.avgPct) >= 0 ? '+' : '') + fmt(item.avgPct) + '%</dd></div><div><dt>样本量</dt><dd>' + item.sample + ' 条</dd></div><div><dt>观察周期</dt><dd>' + item.reviewDays + ' 天</dd></div></dl></article>';
+        }).join('') + '</div>';
+    }
+
+    function initStrategyComparison() {
+        const rows = Array.isArray(embedded.strategies) ? embedded.strategies : [];
+        selectedStrategies = rows.slice(0, Math.min(3, rows.length)).map(row => String(row.strategy || '')).filter(Boolean);
+        renderStrategyComparison();
+        const choices = document.getElementById('strategyCompareChoices');
+        if (!choices) return;
+        choices.addEventListener('change', event => {
+            if (!event.target.matches('input[type="checkbox"]')) return;
+            selectedStrategies = selectStrategyKeys(selectedStrategies, event.target.value, 4);
+            renderStrategyComparison();
         });
     }
 
@@ -381,6 +484,8 @@
         decorateCards();
         renderWatchlist();
         fetchAlerts();
+        initStrategyComparison();
+        loadOverview();
     }
 
     if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', init, { once: true });

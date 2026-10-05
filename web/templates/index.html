@@ -246,6 +246,11 @@ a{text-decoration:none;color:inherit}
 <!-- ===== 上一版信号次日复盘 ===== -->
 <div id="panel-backtest" class="tab-panel" style="display:none">
 <div class="panel-heading"><h2>策略复盘</h2><p>回看历史信号与次日表现</p></div>
+<section class="strategy-compare" id="strategyCompare" aria-label="策略横向比较">
+<div class="strategy-compare-head"><div><h3>策略横向比较</h3><p>选择 2–4 个看涨策略，对比历史胜率、平均涨幅和样本量</p></div><span>仅用于复盘展示，不参与选股</span></div>
+<div class="strategy-compare-choices" id="strategyCompareChoices"></div>
+<div class="strategy-compare-result" id="strategyCompareResult" aria-live="polite"><div class="research-note">正在整理可比较策略…</div></div>
+</section>
 {% if strategyDashboard and strategyDashboard.historyRows %}
 <section class="strategy-rate-board" aria-label="所有策略历史胜率">
 <div class="strategy-rate-head"><div class="strategy-rate-title">1. 所有策略历史胜率</div><div class="strategy-rate-period">{{ strategyDashboard.historyStart }} 至 {{ strategyDashboard.historyEnd }}<br>累计 {{ strategyDashboard.totalRecords }} 条策略信号 · 按历史胜率降序</div></div>

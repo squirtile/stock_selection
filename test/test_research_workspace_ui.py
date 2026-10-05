@@ -78,6 +78,14 @@ class ResearchWorkspaceUiTest(unittest.TestCase):
         scripts = [tag.get("src", "") for tag in soup.find_all("script")]
         self.assertTrue(any(src.endswith("/static/research_workspace.js?v=20261005-1") for src in scripts))
 
+    def test_strategy_comparison_landmarks_are_in_replay_panel(self):
+        soup = self.render_home()
+        compare = soup.select_one("#strategyCompare")
+        self.assertIsNotNone(compare)
+        self.assertEqual(compare.get("aria-label"), "策略横向比较")
+        self.assertIsNotNone(compare.select_one("#strategyCompareChoices"))
+        self.assertEqual(compare.select_one("#strategyCompareResult").get("aria-live"), "polite")
+
     def test_javascript_storage_helpers_fail_closed_and_deduplicate_alerts(self):
         root = Path(__file__).resolve().parents[1]
         program = r"""
@@ -102,6 +110,32 @@ console.log(JSON.stringify({
         self.assertEqual([row["code"] for row in value["added"]], ["600001", "600002"])
         self.assertEqual([(row["code"], row["name"]) for row in value["removed"]], [("600002", "乙")])
         self.assertEqual(value["alerts"], {"all": [{"id": "a"}, {"id": "b"}], "unread": [{"id": "a"}]})
+
+    def test_javascript_comparison_limit_metrics_and_degraded_overview(self):
+        root = Path(__file__).resolve().parents[1]
+        program = r"""
+const ws=require('./static/research_workspace.js');
+let selected=[];
+['A','B','C','D','E'].forEach(key=>{selected=ws.selectStrategyKeys(selected,key,4)});
+const limited=selected;
+selected=ws.selectStrategyKeys(selected,'B',4);
+const compared=ws.buildStrategyComparison([
+ {strategy:'A',historyWinRate:60,historyAvgPct:1.2,historyEvaluated:10,reviewDays:5},
+ {strategy:'C',historyWinRate:45,historyAvgPct:-0.2,historyEvaluated:20,reviewDays:3}
+],['A','C']);
+const overview=ws.marketOverviewModel({healthySources:3,totalSources:5,degraded:true,breadth:{status:'missing',total:0}});
+console.log(JSON.stringify({limited,selected,compared,overview}));
+"""
+        result = subprocess.run(["node", "-e", program], cwd=root, text=True, capture_output=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        value = json.loads(result.stdout)
+        self.assertEqual(value["limited"], ["A", "B", "C", "D"])
+        self.assertEqual(value["selected"], ["A", "C", "D"])
+        self.assertEqual(value["compared"][0], {"strategy": "A", "winRate": 60, "avgPct": 1.2, "sample": 10, "reviewDays": 5})
+        self.assertEqual(value["compared"][1]["avgPct"], -0.2)
+        self.assertEqual(value["overview"]["state"], "degraded")
+        self.assertEqual(value["overview"]["sourceText"], "3/5 数据源可用")
+        self.assertEqual(value["overview"]["breadthText"], "市场宽度暂无")
 
 
 if __name__ == "__main__":
