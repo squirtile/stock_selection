@@ -1339,10 +1339,13 @@ def scan_intraday(limit: int = 50) -> dict[str, Any]:
             strategies.extend(x["name"] for x in second_buys)
             if stock.get("longShadowMatch"): strategies.append("长上下影线")
             if stock.get("bigYangPullbackMatch"): strategies.append("主升-大阳回调不破10日线")
-            if strategies and stock.get("sector"):
+            # 与盘中一致：行业数据只参与评分，缺失时不能清空个股策略命中。
+            if strategies:
                 item = dict(stock)
                 item["tailStrategies"] = strategies
                 item["briefReasons"] = strategies[:3]
+                if not stock.get("sector"):
+                    item["briefReasons"].append("行业数据降级")
                 tail_selected.append(item)
         tail_selected.sort(key=lambda x: (x["score"], x["amount"]), reverse=True)
         retained_tail = _retain_tail_hits(now, tail_selected[:limit])
